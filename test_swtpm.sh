@@ -97,6 +97,7 @@ if [ "$(cat credentials/valid.enc)" != "valid-secret" ]; then
     echo "ERROR: Valid file decryption mismatched"
     exit 1
 fi
+echo "TEST: Valid file: Success"
 
 # 5.2 Permissions propagation
 PERM=$(stat -c %a credentials/perms.enc)
@@ -104,57 +105,64 @@ if [ "$PERM" != "400" ]; then
     echo "ERROR: Permission propagation failed. Expected 400, got $PERM"
     exit 1
 fi
+echo "TEST: Permission: Success"
 
 # 5.3 Missing user.size (should be transparent/invisible)
 if ls credentials/ | grep -q missing.enc; then
     echo "ERROR: File without user.size appeared in readdir (ls)"
     exit 1
 fi
+echo "TEST: Missing user.size (readdir): Success"
 
 if [ -e credentials/missing.enc ]; then
     echo "ERROR: File without user.size is accessible via getattr (stat)"
     exit 1
 fi
+echo "TEST: Missing user.size (getattr): Success"
 
 if cat credentials/missing.enc 2>/dev/null; then
     echo "ERROR: File without user.size is readable"
     exit 1
 fi
+echo "TEST: Missing user.size (read): Success"
 
 # 5.4 Zero size (should be empty read natively based on getattr size 0)
 if [ "$(cat credentials/zero.enc)" != "" ]; then
     echo "ERROR: Zero size mismatch"
     exit 1
 fi
+echo "TEST: user.size (zero): Success"
 
 # 5.5 Short size (bounds should limit to what getattr returned)
 if [ "$(cat credentials/short.enc | wc -c)" != "2" ]; then
     echo "ERROR: Short boundary mismatch"
     exit 1
 fi
+echo "TEST: user.size (shorter): Success"
 
 # 5.6 Long size (bounds should be protected by the actual decrypted memory limit in read)
 if [ "$(cat credentials/long.enc | wc -c)" != "12" ]; then
     echo "ERROR: Long boundary exceeded decrypted footprint"
     exit 1
 fi
+echo "TEST: user.size (longer): Success"
 
 # 5.7 Garbage size (strtol parses natively mapping to 0 for invalid hex completely, so it acts like 0 size)
 if [ "$(cat credentials/garbage.enc)" != "" ]; then
     echo "ERROR: Garbage boundary mismatch"
     exit 1
 fi
+echo "TEST: user.size (garbage): Success"
 
 # 5.8 Readdir test
-ls -la credentials/
 NUM_FILES=$(ls credentials/many | wc -l)
 if [ "$NUM_FILES" != "3000" ]; then
     echo "ERROR: Readdir failed to list all files, found $NUM_FILES, expected 300"
     exit 1
 fi
+echo "TEST: many files: Success"
 
 # 6. Add a file after FUSE started
-echo "Testing dynamic file addition..."
 echo -n "late-secret" > late.txt
 tpm2_rsaencrypt -c 0x81010002 -s oaep -o source/late.enc late.txt -T "$TCTI_ARG"
 setfattr -n user.size -v b source/late.enc # 'b' is 11 bytes
@@ -163,8 +171,8 @@ if [ "$(cat credentials/late.enc)" != "late-secret" ]; then
     echo "ERROR: Late file decryption mismatched"
     exit 1
 fi
+echo "TEST: dynamic file: Success"
 
-echo "Testing limits (max_file_size=100)..."
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
@@ -176,8 +184,8 @@ if cat credentials/valid.enc 2>/dev/null; then
     echo "ERROR: File size limit failed, file was read successfully (max_file_size=100 < 256)"
     exit 1
 fi
+echo "TEST: max_file_size: Success"
 
-echo "Testing limits (max_open_files=2)..."
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
@@ -191,12 +199,15 @@ if cat credentials/late.enc 2>/dev/null; then
     echo "ERROR: max_open_files limit failed, third file was opened"
     exit 1
 fi
+echo "TEST: max_open_files: Success"
+
+
 exec 3<&-
 exec 4<&-
-
 if ! cat credentials/late.enc >/dev/null; then
     echo "ERROR: Failed to open file after FDs were closed"
     exit 1
 fi
+echo "TEST: max_open_files: Success"
 
 echo "All tests passed successfully!"

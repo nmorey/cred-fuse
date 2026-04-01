@@ -38,7 +38,7 @@ struct cred_fuse_opts global_opts;
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
 static const struct fuse_opt cred_opts[] = {
     CRED_OPT("source_dir=%s", source_dir),
-    CRED_OPT("tpm_handle=%s", tpm_handle),
+    CRED_OPT("tpm_handle=%s", tpm_handle_str),
     CRED_OPT("tcti=%s", tcti),
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
@@ -154,18 +154,9 @@ static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
-struct decrypted_node {
-    uint8_t *buf;
-    size_t len;
-    size_t allocated_size;
-};
-
 static int cred_open(const char *path, struct fuse_file_info *fi) {
     char full_path[PATH_MAX];
     char xattr_buf[64];
-    uint8_t *plain = NULL;
-    size_t plain_len = 0;
-    size_t allocated_size = 0;
     int r;
     ssize_t s;
     struct decrypted_node *node;
@@ -190,30 +181,25 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
         goto err_open_files;
     }
 
-    r = decrypt_credential(full_path, &plain, &plain_len, &allocated_size);
-    if (r < 0) {
-        ret = r;
-        goto err_open_files;
-    }
-
     node = malloc(sizeof(struct decrypted_node));
     if (!node) {
         ret = -ENOMEM;
-        goto err_plain;
+        goto err_open_files;
     }
+    memset(node, 0, sizeof(*node));
 
-    node->buf = plain;
-    node->len = plain_len;
-    node->allocated_size = allocated_size;
+    r = decrypt_credential(full_path, node);
+    if (r < 0) {
+        ret = r;
+        goto err_decrypt;
+    }
 
     fi->fh = (uint64_t)node;
     return 0;
 
-err_plain:
-    OPENSSL_cleanse(plain, allocated_size);
-    munlock(plain, allocated_size);
-    free(plain);
-err_open_files:
+ err_decrypt:
+    free(node);
+ err_open_files:
     __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     return ret;
 }
@@ -246,11 +232,7 @@ static int cred_release(const char *path, struct fuse_file_info *fi) {
     (void)path;
 
     if (node) {
-        if (node->buf) {
-            OPENSSL_cleanse(node->buf, node->allocated_size);
-            munlock(node->buf, node->allocated_size);
-            free(node->buf);
-        }
+        clean_decrypted_node(node);
         free(node);
     }
 
@@ -282,11 +264,20 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (!global_opts.source_dir || !global_opts.tpm_handle) {
+    if (!global_opts.source_dir || !global_opts.tpm_handle_str) {
         fprintf(stderr, "Missing required arguments:\n"
                         "  -o source_dir=<path>\n  -o tpm_handle=<hex>\n");
         return 1;
     }
+
+    char *endptr;
+    errno = 0;
+    unsigned long handle = strtoul(global_opts.tpm_handle_str, &endptr, 0);
+    if (errno != 0 || *endptr != '\0' || handle > 0xFFFFFFFF || (handle & 0xFF000000) != 0x81000000) {
+        fprintf(stderr, "Invalid tpm_handle. Must be a valid persistent TPM handle (e.g., 0x81xxxxxx).\n");
+        return 1;
+    }
+    global_opts.tpm_handle = (uint32_t)handle;
 
     if (global_opts.max_file_size <= 0 || global_opts.max_file_size > 1024 * 1024 * 1024) {
         fprintf(stderr, "Invalid max_file_size\n");

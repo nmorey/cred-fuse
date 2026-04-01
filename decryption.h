@@ -6,13 +6,24 @@
 
 struct cred_fuse_opts {
     char *source_dir;
-    char *tpm_handle;
+    char *tpm_handle_str;
+    uint32_t tpm_handle;
     char *tcti;
     int max_open_files;
     int max_file_size;
 };
 
+struct decrypted_node {
+    uint8_t *buf;
+    size_t len;
+    size_t allocated_size;
+};
+
 extern struct cred_fuse_opts global_opts;
+/*
+ * Cleanse, munlock and free the buffer attached to a decrypted_node
+ */
+void clean_decrypted_node(struct decrypted_node *node);
 
 /* Initializes decryption module, caching host-specific paths.
  * Returns 0 on success, < 0 on error.
@@ -26,8 +37,6 @@ int init_decryption(const char *source_dir);
  * The caller must free *out_buf.
  */
 int decrypt_credential(const char *file_path,
-                       uint8_t **out_buf,
-                       size_t *out_len,
-                       size_t *out_allocated);
+		       struct decrypted_node *out);
 
 #endif /* DECRYPTION_H */

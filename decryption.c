@@ -39,6 +39,34 @@
 
 static char cached_host_key_path[PATH_MAX] = {0};
 
+void clean_decrypted_node(struct decrypted_node *node)
+{
+    if (!node || !node->buf)
+	return;
+
+    OPENSSL_cleanse(node->buf, node->allocated_size);
+    munlock(node->buf, node->allocated_size);
+    free(node->buf);
+    node->buf = NULL;
+
+    return;
+}
+
+static void *malloc_mlock(size_t size)
+{
+    uint8_t *ptr = NULL;
+
+    ptr = malloc(size);
+    if (!ptr) {
+        return NULL;
+    }
+    if (mlock(ptr, size) != 0) {
+        free(ptr);
+        return NULL;
+    }
+    return ptr;
+}
+
 int init_decryption(const char *source_dir) {
     char hostname[256] = {0};
     char *dot;
@@ -93,6 +121,7 @@ static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_si
         if (err == 0)
 	    err = EIO;
         free(*buf);
+        *buf = NULL;
         fclose(f);
         return -err;
     }
@@ -102,18 +131,31 @@ static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_si
     return 0;
 }
 
+static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
+    uint8_t *ptr;
+
+    ptr = malloc_mlock(message->size);
+    if (!ptr) {
+        return NULL;
+    }
+
+    memcpy(ptr, message->buffer, message->size);
+
+    return ptr;
+}
+
 static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
-                            uint8_t **out_buf, size_t *out_len, size_t *out_allocated) {
+			    struct decrypted_node *out) {
     TSS2_RC rc;
     TSS2_TCTI_CONTEXT *tcti_ctx = NULL;
     ESYS_CONTEXT *esys_ctx = NULL;
-    long int handle_val;
     ESYS_TR key_handle = ESYS_TR_NONE;
     TPM2B_PUBLIC_KEY_RSA cipher_text;
     TPMT_RSA_DECRYPT inScheme;
     TPM2B_DATA label = { .size = 0 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
-    int mlock_err = 0;
+    int ret_err = 0;
+    int mlocked = 0;
 
     rc = Tss2_TctiLdr_Initialize(global_opts.tcti, &tcti_ctx);
     if (rc != TSS2_RC_SUCCESS)
@@ -121,26 +163,21 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 
     rc = Esys_Initialize(&esys_ctx, tcti_ctx, NULL);
     if (rc != TSS2_RC_SUCCESS) {
-        Tss2_TctiLdr_Finalize(&tcti_ctx);
-        return -ENODEV;
+        ret_err = -ENODEV;
+        goto out_tcti;
     }
 
-    handle_val = strtol(global_opts.tpm_handle, NULL, 0);
-
-    rc = Esys_TR_FromTPMPublic(esys_ctx, handle_val,
+    rc = Esys_TR_FromTPMPublic(esys_ctx, global_opts.tpm_handle,
                                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
                                &key_handle);
     if (rc != TSS2_RC_SUCCESS) {
-        Esys_Finalize(&esys_ctx);
-        Tss2_TctiLdr_Finalize(&tcti_ctx);
-        return -ENODEV;
+        ret_err = -ENODEV;
+        goto out_esys;
     }
 
     if (in_len == 0 || in_len > sizeof(cipher_text.buffer)) {
-        Esys_TR_Close(esys_ctx, &key_handle);
-        Esys_Finalize(&esys_ctx);
-        Tss2_TctiLdr_Finalize(&tcti_ctx);
-        return -EMSGSIZE;
+        ret_err = -EMSGSIZE;
+        goto out_key;
     }
 
     cipher_text.size = in_len;
@@ -153,63 +190,49 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                           ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
                           &cipher_text, &inScheme, &label, &message);
 
-    if (rc == TSS2_RC_SUCCESS && message) {
-        if (message->size == 0) {
-            Esys_Free(message);
-            message = NULL;
-            mlock_err = ENODATA;
-        } else if (mlock(message->buffer, message->size) != 0) {
-            mlock_err = errno;
-            OPENSSL_cleanse(message->buffer, message->size);
-            Esys_Free(message);
-            message = NULL;
-        }
+    if (rc != TSS2_RC_SUCCESS || !message) {
+        ret_err = -EACCES;
+        goto out_msg;
     }
 
+    if (message->size == 0) {
+        ret_err = -ENODATA;
+        goto out_msg;
+    }
+
+    if (mlock(message->buffer, message->size) != 0) {
+        ret_err = -errno;
+        goto out_msg;
+    }
+    mlocked = 1;
+
+    out->buf = copy_tpm_message(message);
+
+    if (out->buf == NULL)
+	ret_err = -errno;
+    else
+	out->len = out->allocated_size = message->size;
+out_msg:
+    if (message) {
+        OPENSSL_cleanse(message->buffer, message->size);
+        if (mlocked) {
+            munlock(message->buffer, message->size);
+        }
+        Esys_Free(message);
+    }
+out_key:
     Esys_TR_Close(esys_ctx, &key_handle);
+out_esys:
     Esys_Finalize(&esys_ctx);
+out_tcti:
     Tss2_TctiLdr_Finalize(&tcti_ctx);
 
-    if (mlock_err) {
-        return -mlock_err;
-    }
-
-    if (rc != TSS2_RC_SUCCESS || !message) {
-        if (message) {
-            OPENSSL_cleanse(message->buffer, message->size);
-	        Esys_Free(message);
-        }
-        return -EACCES;
-    }
-
-    *out_buf = malloc(message->size);
-    if (!*out_buf) {
-        munlock(message->buffer, message->size);
-        Esys_Free(message);
-        return -ENOMEM;
-    }
-    if (mlock(*out_buf, message->size) != 0) {
-        mlock_err = errno;
-        free(*out_buf);
-        munlock(message->buffer, message->size);
-        Esys_Free(message);
-        return -mlock_err;
-    }
-
-    memcpy(*out_buf, message->buffer, message->size);
-    *out_len = message->size;
-    *out_allocated = message->size;
-
-    OPENSSL_cleanse(message->buffer, message->size);
-    munlock(message->buffer, message->size);
-    Esys_Free(message);
-
-    return 0;
+    return ret_err;
 }
 
 static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
-                          const uint8_t *passphrase, size_t pass_len,
-                          uint8_t **out_buf, size_t *out_len, size_t *out_allocated) {
+			  const struct decrypted_node *passphrase,
+			  struct decrypted_node *out) {
     const uint8_t *salt;
     const uint8_t *ciphertext;
     size_t ciphertext_len;
@@ -227,7 +250,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     ciphertext = in_data + AES_HEADER_LEN + AES_SALT_LEN;
     ciphertext_len = in_len - (AES_HEADER_LEN + AES_SALT_LEN);
 
-    if (!PKCS5_PBKDF2_HMAC((const char *)passphrase, pass_len,
+    if (!PKCS5_PBKDF2_HMAC((const char *)passphrase->buf, passphrase->len,
                            salt, AES_SALT_LEN, PBKDF2_ITER,
                            EVP_sha256(), sizeof(key_iv), key_iv)){
         ret_err = -EACCES;
@@ -251,14 +274,9 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     }
 
     alloc_sz = ciphertext_len + EVP_MAX_BLOCK_LENGTH;
-    plain = malloc(alloc_sz);
+    plain = malloc_mlock(alloc_sz);
     if (!plain) {
-        ret_err = -ENOMEM;
-        goto decrypt_init_err;
-    }
-    if (mlock(plain, alloc_sz) != 0) {
         ret_err = -errno;
-        free(plain);
         goto decrypt_init_err;
     }
 
@@ -274,9 +292,9 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 
     EVP_CIPHER_CTX_free(ctx);
 
-    *out_len = len1 + len2;
-    *out_allocated = alloc_sz;
-    *out_buf = plain; // Returned buffer has exact plaintext
+    out->len = len1 + len2;
+    out->allocated_size = alloc_sz;
+    out->buf = plain; // Returned buffer has exact plaintext
 
     OPENSSL_cleanse(key_iv, sizeof(key_iv));
     return 0;
@@ -294,17 +312,13 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 }
 
 int decrypt_credential(const char *file_path,
-                       uint8_t **out_buf,
-                       size_t *out_len,
-                       size_t *out_allocated) {
+		       struct decrypted_node *out) {
     uint8_t *enc_data = NULL;
     size_t enc_len = 0;
     int is_aes;
     uint8_t *host_key_enc = NULL;
     size_t host_enc_len = 0;
-    uint8_t *passphrase = NULL;
-    size_t pass_len = 0;
-    size_t pass_allocated = 0;
+    struct decrypted_node passphrase = { NULL, 0, 0};
     int r;
 
     r = read_file(file_path, &enc_data, &enc_len, global_opts.max_file_size);
@@ -315,7 +329,7 @@ int decrypt_credential(const char *file_path,
 
     if (!is_aes) {
         // RSA directly
-        r = tpm2_rsa_decrypt(enc_data, enc_len, out_buf, out_len, out_allocated);
+        r = tpm2_rsa_decrypt(enc_data, enc_len, out);
 	goto read_err;
     }
 
@@ -332,19 +346,17 @@ int decrypt_credential(const char *file_path,
 	goto read_err;
     }
 
-    r = tpm2_rsa_decrypt(host_key_enc, host_enc_len, &passphrase, &pass_len, &pass_allocated);
+    r = tpm2_rsa_decrypt(host_key_enc, host_enc_len, &passphrase);
     free(host_key_enc);
     if (r < 0) {
 	goto read_err;
     }
 
-    r = do_aes_decrypt(enc_data, enc_len, passphrase, pass_len, out_buf, out_len, out_allocated);
+    r = do_aes_decrypt(enc_data, enc_len, &passphrase, out);
 
-    OPENSSL_cleanse(passphrase, pass_len);
-    munlock(passphrase, pass_allocated);
-    free(passphrase);
+    clean_decrypted_node(&passphrase);
  read_err:
-	free(enc_data);
+    free(enc_data);
 
     return r;
 }
