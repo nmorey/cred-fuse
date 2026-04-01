@@ -268,7 +268,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 	goto decrypt_init_err;
     }
 
-    if (ciphertext_len > INT_MAX) {
+    if (ciphertext_len > INT_MAX - EVP_MAX_BLOCK_LENGTH) {
         ret_err = -E2BIG;
         goto decrypt_init_err;
     }
