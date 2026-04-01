@@ -181,6 +181,14 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
         goto err_open_files;
     }
 
+    long parsed_size;
+    xattr_buf[s] = '\0';
+    parsed_size = strtol(xattr_buf, NULL, 16);
+    if (parsed_size < 0) {
+        ret = -ENOENT;
+        goto err_open_files;
+    }
+
     node = malloc(sizeof(struct decrypted_node));
     if (!node) {
         ret = -ENOMEM;
@@ -192,6 +200,10 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     if (r < 0) {
         ret = r;
         goto err_decrypt;
+    }
+
+    if (node->len > (size_t)parsed_size) {
+        node->len = (size_t)parsed_size;
     }
 
     fi->fh = (uint64_t)node;
