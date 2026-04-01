@@ -1,0 +1,29 @@
+name: cred-fuse CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential pkg-config libfuse3-dev libssl-dev libtss2-dev tpm2-tools swtpm valgrind attr
+
+    - name: Configure CMake
+      run: cmake -B build -S .
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Test (Valgrind)
+      run: |
+        cd build
+        USE_VALGRIND=1 ctest -V
