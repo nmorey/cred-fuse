@@ -169,6 +169,8 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     if ((fi->flags & O_ACCMODE) != O_RDONLY)
 	return -EACCES;
 
+    fi->direct_io = 1;
+
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
         ret = -ENFILE;
