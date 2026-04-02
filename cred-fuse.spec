@@ -20,18 +20,21 @@ Name:           cred-fuse
 Version:        0.1.0
 Release:        0
 Summary:        FUSE driver for TPM-encrypted credentials
-License:        GPLv2
+License:        GPL-2.0-only
 Group:          System/Filesystems
 URL:            https://github.com/nmorey/homelab
 Source0:        %{name}-%{version}%{?git_ver}.tar.gz
 BuildRequires:  cmake
 BuildRequires:  gcc
 BuildRequires:  pkgconfig
-BuildRequires:  fuse3
-BuildRequires:  swtpm
+BuildRequires:  pkgconfig(fuse3)
 BuildRequires:  pkgconfig(libcrypto)
 BuildRequires:  pkgconfig(tss2-esys)
 BuildRequires:  pkgconfig(tss2-tctildr)
+# For testing
+BuildRequires:  tpm2.0-tools
+BuildRequires:  swtpm
+BuildRequires:  attr
 Requires:       fuse3
 Requires:       tpm2.0-abrmd
 
@@ -41,7 +44,7 @@ credentials (RSA or AES+TPM) dynamically from a source directory, inheriting
 POSIX DAC access controls.
 
 %prep
-%setup -q
+%setup -q -n  %{name}-%{version}%{?git_ver}
 
 %build
 %cmake
@@ -56,6 +59,6 @@ POSIX DAC access controls.
 %files
 %license LICENSE
 %doc README.md
-%{_sbindir}//cred-fuse
+%{_sbindir}/cred-fuse
 
 %changelog
