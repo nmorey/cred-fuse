@@ -85,8 +85,7 @@ else
 fi
 
 echo "Starting FUSE..."
-$FUSE_CMD -f -o source_dir=$WORKDIR/source,tpm_handle=0x81010002,tcti="$TCTI_ARG" $WORKDIR/credentials &
-FUSE_PID=$!
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG" &FUSE_PID=$!
 sleep 1
 
 # 5. Run Assertions
@@ -176,7 +175,7 @@ echo "TEST: dynamic file: Success"
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
-$FUSE_CMD -f -o source_dir=$WORKDIR/source,tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=100 $WORKDIR/credentials &
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=100 &
 FUSE_PID=$!
 sleep 1
 
@@ -189,7 +188,7 @@ echo "TEST: max_file_size: Success"
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
-$FUSE_CMD -f -o source_dir=$WORKDIR/source,tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=1000 $WORKDIR/credentials &
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=1000 &
 FUSE_PID=$!
 sleep 1
 

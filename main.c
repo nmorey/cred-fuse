@@ -37,13 +37,23 @@ struct cred_fuse_opts global_opts;
 
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
 static const struct fuse_opt cred_opts[] = {
-    CRED_OPT("source_dir=%s", source_dir),
     CRED_OPT("tpm_handle=%s", tpm_handle_str),
     CRED_OPT("tcti=%s", tcti),
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
     FUSE_OPT_END
 };
+
+static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
+    (void)data;
+    (void)outargs;
+
+    if (key == FUSE_OPT_KEY_NONOPT && global_opts.source_dir == NULL) {
+        global_opts.source_dir = strdup(arg);
+        return 0; /* Consume the first non-option argument as source_dir */
+    }
+    return 1; /* Keep other arguments (like the mountpoint) */
+}
 
 static int current_open_files = 0;
 
@@ -274,13 +284,14 @@ int main(int argc, char *argv[]) {
     global_opts.max_open_files = 1024;
     global_opts.max_file_size = 65536;
 
-    if (fuse_opt_parse(&args, &global_opts, cred_opts, NULL) == -1) {
+    if (fuse_opt_parse(&args, &global_opts, cred_opts, opt_proc) == -1) {
         return 1;
     }
 
     if (!global_opts.source_dir || !global_opts.tpm_handle_str) {
+        fprintf(stderr, "Usage: %s <source_dir> <mountpoint> -o tpm_handle=<hex> [options]\n", argv[0]);
         fprintf(stderr, "Missing required arguments:\n"
-                        "  -o source_dir=<path>\n  -o tpm_handle=<hex>\n");
+                        "  <source_dir>\n  -o tpm_handle=<hex>\n");
         return 1;
     }
 

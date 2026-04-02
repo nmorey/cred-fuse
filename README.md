@@ -19,16 +19,17 @@ make
 
 ## Configuration (Mounting)
 
-`cred-fuse` leverages parameters directly inside its mount declaration:
-- `source_dir`: Path mapping into the target encrypted secrets.
-- `tpm_handle`: The persistent configuration slot housing your TPM decryption key (e.g., `0x81010002`).
-- `tcti`: (Optional) The TCTI context string to use for connecting to the TPM (e.g., `swtpm`, `device:/dev/tpmrm0`). Defaults to the standard TSS2 connection logic if omitted.
-- `max_open_files`: (Optional) Maximum number of credentials that can be simultaneously opened via FUSE (Default: `1024`). Prevents memory exhaustion attacks via excessive allocations.
-- `max_file_size`: (Optional) Maximum size in bytes a single encrypted payload can be on disk (Default: `65536` bytes / 64KB). Protects against out-of-memory allocations.
+`cred-fuse` requires the source directory and mount point as positional arguments, and leverages parameters directly inside its mount declaration:
+- `<source_dir>`: The first positional argument, mapping into the target encrypted secrets.
+- `<mount_point>`: The second positional argument, where the decrypted secrets will be accessible.
+- `-o tpm_handle`: The persistent configuration slot housing your TPM decryption key (e.g., `0x81010002`).
+- `-o tcti`: (Optional) The TCTI context string to use for connecting to the TPM (e.g., `swtpm`, `device:/dev/tpmrm0`). Defaults to the standard TSS2 connection logic if omitted.
+- `-o max_open_files`: (Optional) Maximum number of credentials that can be simultaneously opened via FUSE (Default: `1024`). Prevents memory exhaustion attacks via excessive allocations.
+- `-o max_file_size`: (Optional) Maximum size in bytes a single encrypted payload can be on disk (Default: `65536` bytes / 64KB). Protects against out-of-memory allocations.
 
 Example usage manually:
 ```bash
-./cred-fuse -o source_dir=/etc/credstore.encrypted,tpm_handle=0x81010002,max_open_files=500,max_file_size=32768 /credentials
+./cred-fuse /etc/credstore.encrypted /credentials -o tpm_handle=0x81010002,max_open_files=500,max_file_size=32768
 ```
 
 Example inside `/etc/fstab`:
