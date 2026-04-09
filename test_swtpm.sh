@@ -78,7 +78,7 @@ for i in $(seq 1 3000); do
 done
 
 # 4. Start FUSE
-FUSE_EXE="${1:-./cred-fuse}"
+FUSE_EXE="${1:-./mount.cred-fuse}"
 if [ ! -x "$FUSE_EXE" ]; then
     echo "Error: FUSE executable not found at $FUSE_EXE"
     exit 1

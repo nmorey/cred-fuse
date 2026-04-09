@@ -59,6 +59,6 @@ POSIX DAC access controls.
 %files
 %license LICENSE
 %doc README.md
-%{_sbindir}/cred-fuse
+%{_sbindir}/mount.cred-fuse
 
 %changelog

@@ -29,7 +29,7 @@ make
 
 Example usage manually:
 ```bash
-./cred-fuse /etc/credstore.encrypted /credentials -o tpm_handle=0x81010002,max_open_files=500,max_file_size=32768
+./mount.cred-fuse /etc/credstore.encrypted /credentials -o tpm_handle=0x81010002,max_open_files=500,max_file_size=32768
 ```
 
 Example inside `/etc/fstab`:

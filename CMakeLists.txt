@@ -14,21 +14,21 @@ find_package(OpenSSL REQUIRED)
 # TSS2 Requirements (libtss2-esys, libtss2-rc, libtss2-tctildr)
 pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr)
 
-add_executable(cred-fuse main.c decryption.c)
+add_executable(mount.cred-fuse main.c decryption.c)
 
-target_include_directories(cred-fuse PRIVATE
+target_include_directories(mount.cred-fuse PRIVATE
     ${FUSE3_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${TSS2_INCLUDE_DIRS}
 )
 
-target_link_libraries(cred-fuse PRIVATE
+target_link_libraries(mount.cred-fuse PRIVATE
     ${FUSE3_LIBRARIES}
     OpenSSL::Crypto
     ${TSS2_LIBRARIES}
 )
 
-install(TARGETS cred-fuse DESTINATION sbin)
+install(TARGETS mount.cred-fuse DESTINATION sbin)
 
 enable_testing()
-add_test(NAME cred-fuse-tests COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_swtpm.sh $<TARGET_FILE:cred-fuse>)
+add_test(NAME cred-fuse-tests COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_swtpm.sh $<TARGET_FILE:mount.cred-fuse>)
