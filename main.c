@@ -95,6 +95,8 @@ static int cred_getattr(const char *path, struct stat *stbuf,
     if (res == -1)
 	return -errno;
 
+    stbuf->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+
     // For regular files, check user.size xattr
     if (S_ISREG(stbuf->st_mode)) {
         char xattr_buf[64] = {0};

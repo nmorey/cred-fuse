@@ -65,6 +65,11 @@ tpm2_rsaencrypt -c 0x81010002 -s oaep -o source/perms.enc valid.txt -T "$TCTI_AR
 setfattr -n user.size -v c source/perms.enc
 chmod 400 source/perms.enc
 
+# Write permissions stripping test
+tpm2_rsaencrypt -c 0x81010002 -s oaep -o source/write_perms.enc valid.txt -T "$TCTI_ARG"
+setfattr -n user.size -v c source/write_perms.enc
+chmod 777 source/write_perms.enc
+
 # Many files for readdir test
 mkdir -p source/many
 for i in $(seq 1 3000); do
@@ -121,6 +126,14 @@ if [ "$PERM" != "444" ]; then
     exit 1
 fi
 echo "TEST: Write permissions stripped: Success"
+
+# 5.2.2 Check 777 becomes 555
+PERM=$(stat -c %a credentials/write_perms.enc)
+if [ "$PERM" != "555" ]; then
+    echo "ERROR: Write permissions not completely stripped from 777. Expected 555, got $PERM"
+    exit 1
+fi
+echo "TEST: All write permissions stripped: Success"
 
 # 5.3 Missing user.size (should be transparent/invisible)
 if ls credentials/ | grep -q missing.enc; then
