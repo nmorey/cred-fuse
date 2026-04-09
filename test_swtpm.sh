@@ -84,8 +84,16 @@ else
     FUSE_CMD="$FUSE_EXE"
 fi
 
+echo "Testing missing 'ro' mount option..."
+if $FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG" >/dev/null 2>&1; then
+    echo "ERROR: FUSE started without 'ro' option"
+    exit 1
+fi
+echo "TEST: missing ro option: Success"
+
 echo "Starting FUSE..."
-$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG" &FUSE_PID=$!
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",ro &
+FUSE_PID=$!
 sleep 1
 
 # 5. Run Assertions
@@ -105,6 +113,14 @@ if [ "$PERM" != "400" ]; then
     exit 1
 fi
 echo "TEST: Permission: Success"
+
+# 5.2.1 Check read-only permissions
+PERM=$(stat -c %a credentials/valid.enc)
+if [ "$PERM" != "444" ]; then
+    echo "ERROR: Write permissions not stripped. Expected 444, got $PERM"
+    exit 1
+fi
+echo "TEST: Write permissions stripped: Success"
 
 # 5.3 Missing user.size (should be transparent/invisible)
 if ls credentials/ | grep -q missing.enc; then
@@ -175,7 +191,7 @@ echo "TEST: dynamic file: Success"
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
-$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=100 &
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",ro,max_open_files=2,max_file_size=100 &
 FUSE_PID=$!
 sleep 1
 
@@ -188,7 +204,7 @@ echo "TEST: max_file_size: Success"
 kill $FUSE_PID 2>/dev/null || true
 umount $WORKDIR/credentials 2>/dev/null || true
 sleep 1
-$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",max_open_files=2,max_file_size=1000 &
+$FUSE_CMD -f $WORKDIR/source $WORKDIR/credentials -o tpm_handle=0x81010002,tcti="$TCTI_ARG",ro,max_open_files=2,max_file_size=1000 &
 FUSE_PID=$!
 sleep 1
 

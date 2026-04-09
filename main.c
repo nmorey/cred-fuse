@@ -35,18 +35,30 @@
 
 struct cred_fuse_opts global_opts;
 
+enum {
+    KEY_RO,
+};
+
+static int is_ro = 0;
+
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
 static const struct fuse_opt cred_opts[] = {
     CRED_OPT("tpm_handle=%s", tpm_handle_str),
     CRED_OPT("tcti=%s", tcti),
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
+    FUSE_OPT_KEY("ro", KEY_RO),
     FUSE_OPT_END
 };
 
 static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
     (void)data;
     (void)outargs;
+
+    if (key == KEY_RO) {
+        is_ro = 1;
+        return 1; /* Keep 'ro' for FUSE mount logic */
+    }
 
     if (key == FUSE_OPT_KEY_NONOPT && global_opts.source_dir == NULL) {
         global_opts.source_dir = strdup(arg);
@@ -292,6 +304,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <source_dir> <mountpoint> -o tpm_handle=<hex> [options]\n", argv[0]);
         fprintf(stderr, "Missing required arguments:\n"
                         "  <source_dir>\n  -o tpm_handle=<hex>\n");
+        return 1;
+    }
+
+    if (!is_ro) {
+        fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
         return 1;
     }
 
