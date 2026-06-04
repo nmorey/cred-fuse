@@ -91,9 +91,13 @@ static int cred_getattr(const char *path, struct stat *stbuf,
     if (build_path(full_path, sizeof(full_path), path) < 0)
         return -ENAMETOOLONG;
 
-    res = stat(full_path, stbuf);
+    res = lstat(full_path, stbuf);
     if (res == -1)
 	return -errno;
+
+    if (S_ISLNK(stbuf->st_mode)) {
+        return -ELOOP;
+    }
 
     stbuf->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
 
@@ -102,7 +106,7 @@ static int cred_getattr(const char *path, struct stat *stbuf,
         char xattr_buf[64] = {0};
         ssize_t s;
 
-        s = getxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
+        s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
         if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
             long parsed_size;
 
@@ -148,6 +152,10 @@ static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
         next_off = telldir(dp);
 
+        if (de->d_type == DT_LNK) {
+            continue; // Skip symbolic links entirely
+        }
+
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
             char subpath[PATH_MAX];
             struct stat tmp_st;
@@ -157,13 +165,18 @@ static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             if (sn_ret < 0 || (size_t)sn_ret >= sizeof(subpath))
                 continue; // Skip if path creation failed or was truncated
 
-            if (stat(subpath, &tmp_st) == 0 && S_ISREG(tmp_st.st_mode)) {
-                char xattr_buf[64];
-                ssize_t s;
+            if (lstat(subpath, &tmp_st) == 0) {
+                if (S_ISLNK(tmp_st.st_mode)) {
+                    continue; // Skip symbolic links
+                }
+                if (S_ISREG(tmp_st.st_mode)) {
+                    char xattr_buf[64];
+                    ssize_t s;
 
-                s = getxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
-                if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf))
-		    continue; // Skip unmanaged files entirely
+                    s = lgetxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
+                    if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf))
+		        continue; // Skip unmanaged files entirely
+                }
             }
         }
 
@@ -185,9 +198,14 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     ssize_t s;
     struct decrypted_node *node;
     int ret;
+    struct stat st;
 
     if (build_path(full_path, sizeof(full_path), path) < 0)
         return -ENAMETOOLONG;
+
+    if (lstat(full_path, &st) == 0 && S_ISLNK(st.st_mode)) {
+        return -ELOOP;
+    }
 
     // Only allow read access
     if ((fi->flags & O_ACCMODE) != O_RDONLY)
@@ -201,7 +219,7 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
         goto err_open_files;
     }
 
-    s = getxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
+    s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
     if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
         ret = -ENOENT;
         goto err_open_files;

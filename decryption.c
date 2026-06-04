@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <fcntl.h>
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -88,47 +89,67 @@ int init_decryption(const char *source_dir) {
 
 /* Helper to read entire file into memory */
 static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_size) {
-    FILE *f = fopen(path, "rb");
+    int fd = -1;
+    FILE *f = NULL;
     long size;
-    int err;
+    int err = 0;
 
-    if (!f)
-	return -errno;
+    fd = open(path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0)
+        return -errno;
 
-    fseek(f, 0, SEEK_END);
-    size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (size <= 0) {
-        err = (size == 0) ? ENODATA : errno;
-        fclose(f);
+    f = fdopen(fd, "rb");
+    if (!f) {
+        err = errno;
+        close(fd);
         return -err;
     }
 
+    if (fseek(f, 0, SEEK_END) != 0) {
+        err = errno;
+        goto out_close;
+    }
+
+    size = ftell(f);
+    if (size <= 0) {
+        err = (size == 0) ? ENODATA : errno;
+        goto out_close;
+    }
+
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        err = errno;
+        goto out_close;
+    }
+
     if ((size_t)size > max_size) {
-        fclose(f);
-        return -EFBIG;
+        err = EFBIG;
+        goto out_close;
     }
 
     *buf = malloc(size);
     if (!*buf) {
-        fclose(f);
-        return -ENOMEM;
+        err = ENOMEM;
+        goto out_close;
     }
 
     if (fread(*buf, 1, size, f) != (size_t)size) {
         err = ferror(f) ? errno : EIO;
-        if (err == 0)
-	    err = EIO;
-        free(*buf);
-        *buf = NULL;
-        fclose(f);
-        return -err;
+        if (err == 0) {
+            err = EIO;
+        }
+        goto out_free;
     }
 
-    fclose(f);
     *len = size;
-    return 0;
+
+out_free:
+    if (err) {
+	free(*buf);
+	*buf = NULL;
+    }
+out_close:
+    fclose(f);
+    return -err;
 }
 
 static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
