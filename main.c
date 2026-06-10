@@ -207,8 +207,9 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     }
     
     char full_path[PATH_MAX];
-    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
-        fuse_reply_err(req, ENAMETOOLONG);
+    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    if (path_ret < 0) {
+        fuse_reply_err(req, -path_ret);
         return;
     }
     
@@ -271,8 +272,9 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
     }
     
     char full_path[PATH_MAX];
-    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
-        fuse_reply_err(req, ENAMETOOLONG);
+    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    if (path_ret < 0) {
+        fuse_reply_err(req, -path_ret);
         return;
     }
     
@@ -321,8 +323,9 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     }
     
     char full_path[PATH_MAX];
-    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
-        fuse_reply_err(req, ENAMETOOLONG);
+    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    if (path_ret < 0) {
+        fuse_reply_err(req, -path_ret);
         return;
     }
     
@@ -485,8 +488,9 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     }
     
     char full_path[PATH_MAX];
-    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
-        fuse_reply_err(req, ENAMETOOLONG);
+    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    if (path_ret < 0) {
+        fuse_reply_err(req, -path_ret);
         return;
     }
     
