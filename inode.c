@@ -18,8 +18,11 @@ struct inode_entry {
     int64_t refcount;
 };
 
+#define HASH_SIZE (MAX_INODE * 2)
+
 static struct inode_entry inodes[MAX_INODE];
 static uint64_t inode_bitmask[BITMASK_WORDS] = {3}; // Pre-mark inode 0 and 1 as active/reserved
+static int16_t path_hash_table[HASH_SIZE]; // Automatically zero-initialized (0 = empty slot)
 static fuse_ino_t last_allocated_ino = 2; // Inode 1 is root
 static pthread_rwlock_t inode_lock = PTHREAD_RWLOCK_INITIALIZER;
 
@@ -70,10 +73,73 @@ static fuse_ino_t allocate_inode_num(void) {
     return 0; // No free inodes
 }
 
+static uint32_t hash_path(const char *str) {
+    uint32_t hash = 5381;
+    int c;
+    while ((c = (unsigned char)*str++)) {
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+    }
+    return hash % HASH_SIZE;
+}
+
+static void insert_hash(fuse_ino_t ino) {
+    uint32_t bucket = hash_path(inodes[ino].path);
+    while (path_hash_table[bucket] != 0) {
+        bucket = (bucket + 1) % HASH_SIZE;
+    }
+    path_hash_table[bucket] = (int16_t)ino;
+}
+
+static void remove_hash(fuse_ino_t ino) {
+    uint32_t bucket = hash_path(inodes[ino].path);
+    while (path_hash_table[bucket] != 0) {
+        if (path_hash_table[bucket] == (int16_t)ino) {
+            break;
+        }
+        bucket = (bucket + 1) % HASH_SIZE;
+    }
+
+    if (path_hash_table[bucket] == 0) {
+        return; // Not found
+    }
+
+    path_hash_table[bucket] = 0;
+
+    // Re-hash the cluster to close the gap and prevent broken chains
+    uint32_t empty_slot = bucket;
+    uint32_t next_slot = (bucket + 1) % HASH_SIZE;
+
+    while (path_hash_table[next_slot] != 0) {
+        fuse_ino_t next_ino = path_hash_table[next_slot];
+        uint32_t natural_bucket = hash_path(inodes[next_ino].path);
+
+        int can_move = 0;
+        if (empty_slot < next_slot) {
+            can_move = (natural_bucket <= empty_slot || natural_bucket > next_slot);
+        } else {
+            can_move = (natural_bucket <= empty_slot && natural_bucket > next_slot);
+        }
+
+        if (can_move) {
+            path_hash_table[empty_slot] = (int16_t)next_ino;
+            path_hash_table[next_slot] = 0;
+            empty_slot = next_slot;
+        }
+        next_slot = (next_slot + 1) % HASH_SIZE;
+    }
+}
+
 static fuse_ino_t find_inode_unlocked(const char *rel_path) {
-    for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
+    uint32_t bucket = hash_path(rel_path);
+    uint32_t start_bucket = bucket;
+    while (path_hash_table[bucket] != 0) {
+        fuse_ino_t ino = path_hash_table[bucket];
         if (is_inode_active(ino) && strcmp(inodes[ino].path, rel_path) == 0) {
             return ino;
+        }
+        bucket = (bucket + 1) % HASH_SIZE;
+        if (bucket == start_bucket) {
+            break;
         }
     }
     return 0;
@@ -127,6 +193,7 @@ fuse_ino_t add_inode(const char *rel_path) {
     inodes[new_ino].path = path_copy;
     inodes[new_ino].refcount = 0;
     inode_lookup_inc(new_ino);
+    insert_hash(new_ino);
 
     pthread_rwlock_unlock(&inode_lock);
     return new_ino;
@@ -142,6 +209,7 @@ fuse_ino_t find_inode(const char *rel_path) {
 
 static void free_inode(fuse_ino_t ino)
 {
+    remove_hash(ino);
     free(inodes[ino].path);
     inodes[ino].path = NULL;
     inodes[ino].refcount = 0;
@@ -190,6 +258,8 @@ void cleanup_inodes(void) {
     // Re-mark bitmask to original state (only 0 and 1 active/reserved)
     memset(inode_bitmask, 0, sizeof(inode_bitmask));
     inode_bitmask[0] = 3;
+    // Clear hash table completely
+    memset(path_hash_table, 0, sizeof(path_hash_table));
     last_allocated_ino = 2;
     pthread_rwlock_unlock(&inode_lock);
 }
