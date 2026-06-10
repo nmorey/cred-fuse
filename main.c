@@ -265,6 +265,11 @@ static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse
 
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
     (void)fi;
+    if (off < 0) {
+        fuse_reply_err(req, EINVAL);
+        return;
+    }
+
     char *rel_path = get_inode_path(ino);
     if (!rel_path) {
         fuse_reply_err(req, errno);
