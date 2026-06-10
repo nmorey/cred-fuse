@@ -402,7 +402,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 
     EVP_CIPHER_CTX_free(ctx);
 
-    out->len = len1 + len2;
+    out->len = (size_t)len1 + (size_t)len2;
     out->allocated_size = alloc_sz;
     out->buf = plain;
 
