@@ -417,6 +417,12 @@ int main(int argc, char *argv[]) {
         ret = 1;
         goto err_early;
     }
+    if (strcmp(abs_source_dir, "/") == 0) {
+        fprintf(stderr, "Error: Root directory '/' is not allowed as source_dir.\n");
+        free(abs_source_dir);
+        ret = 1;
+        goto err_early;
+    }
     free(global_opts.source_dir);
     global_opts.source_dir = abs_source_dir;
     global_opts.source_dir_len = strlen(abs_source_dir);
