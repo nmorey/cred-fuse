@@ -179,7 +179,8 @@ fuse_ino_t add_inode(const char *rel_path) {
         return 0;
     }
 
-    fuse_ino_t new_ino = (fuse_ino_t)(inodes_count + 2); // 1 is root
+    static fuse_ino_t next_ino = 2; // 1 is root
+    fuse_ino_t new_ino = next_ino++;
     inodes[inodes_count].ino = new_ino;
     inodes[inodes_count].path = path_copy;
     inodes[inodes_count].refcount = 0;
