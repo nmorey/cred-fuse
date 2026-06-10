@@ -237,6 +237,22 @@ static int open_and_validate_path(const char *full_path, struct stat *st_out) {
         return -errno;
     }
 
+    // Resolve fd's path to prevent intermediate symlink sandbox escapes
+    char fd_path[64];
+    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    char resolved_path[PATH_MAX];
+    if (!realpath(fd_path, resolved_path)) {
+        close(fd);
+        return -errno;
+    }
+
+    size_t sd_len = global_opts.source_dir_len;
+    if (strncmp(resolved_path, global_opts.source_dir, sd_len) != 0 ||
+        (resolved_path[sd_len] != '\0' && resolved_path[sd_len] != '/')) {
+        close(fd);
+        return -EACCES;
+    }
+
     if (fstat(fd, st_out) != 0) {
         int err = -errno;
         close(fd);
@@ -633,6 +649,7 @@ int main(int argc, char *argv[]) {
     }
     free(global_opts.source_dir);
     global_opts.source_dir = abs_source_dir;
+    global_opts.source_dir_len = strlen(abs_source_dir);
 
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
