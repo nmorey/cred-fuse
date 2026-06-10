@@ -157,68 +157,47 @@ int init_decryption(const char *source_dir) {
 }
 
 static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
-    FILE *f = NULL;
-    long size;
-    int err = 0;
-    int dup_fd;
-
-    dup_fd = dup(fd);
-    if (dup_fd < 0) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
         return -errno;
     }
 
-    f = fdopen(dup_fd, "rb");
-    if (!f) {
-        err = errno;
-        close(dup_fd);
-        return -err;
-    }
-
-    if (fseek(f, 0, SEEK_END) != 0) {
-        err = errno;
-        goto out_close;
-    }
-
-    size = ftell(f);
+    off_t size = st.st_size;
     if (size <= 0) {
-        err = (size == 0) ? ENODATA : errno;
-        goto out_close;
-    }
-
-    if (fseek(f, 0, SEEK_SET) != 0) {
-        err = errno;
-        goto out_close;
+        return size == 0 ? -ENODATA : -errno;
     }
 
     if ((size_t)size > max_size) {
-        err = EFBIG;
-        goto out_close;
+        return -EFBIG;
     }
 
     *buf = malloc_mlock(size);
     if (!*buf) {
-        err = ENOMEM;
-        goto out_close;
+        return -ENOMEM;
     }
 
-    if (fread(*buf, 1, size, f) != (size_t)size) {
-        err = ferror(f) ? errno : EIO;
-        if (err == 0) {
-            err = EIO;
+    size_t bytes_read = 0;
+    while (bytes_read < (size_t)size) {
+        ssize_t r = pread(fd, *buf + bytes_read, (size_t)size - bytes_read, (off_t)bytes_read);
+        if (r < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            int err = -errno;
+            free_munlock(*buf, size);
+            *buf = NULL;
+            return err;
         }
-        goto out_free;
+        if (r == 0) {
+            free_munlock(*buf, size);
+            *buf = NULL;
+            return -EIO;
+        }
+        bytes_read += (size_t)r;
     }
 
-    *len = size;
-
-out_free:
-    if (err) {
-	free_munlock(*buf, (size_t)size);
-	*buf = NULL;
-    }
-out_close:
-    fclose(f);
-    return -err;
+    *len = bytes_read;
+    return 0;
 }
 
 static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
