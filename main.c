@@ -436,5 +436,10 @@ int main(int argc, char *argv[]) {
 
     ret = fuse_main(args.argc, args.argv, &cred_oper, NULL);
     fuse_opt_free_args(&args);
+
+    free(global_opts.source_dir);
+    free(global_opts.tpm_handle_str);
+    free(global_opts.tcti);
+
     return ret;
 }
