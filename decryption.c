@@ -127,6 +127,10 @@ int init_decryption(const char *source_dir) {
     if (dot)
 	*dot = '\0';
 
+    if (hostname[0] == '\0') {
+        return -1;
+    }
+
     ret = snprintf(cached_host_key_path, sizeof(cached_host_key_path), "%s/%s.key", source_dir, hostname);
     if (ret < 0 || (size_t)ret >= sizeof(cached_host_key_path)) {
         return -1;
