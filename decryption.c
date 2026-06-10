@@ -28,6 +28,7 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include <tss2/tss2_esys.h>
 #include <tss2/tss2_tctildr.h>
@@ -37,6 +38,8 @@
 #define AES_HEADER_LEN 8
 
 static char cached_host_key_path[PATH_MAX] = {0};
+static uint8_t cached_host_key_enc[512] = {0};
+static size_t cached_host_key_enc_len = 0;
 
 void clean_decrypted_node(struct decrypted_node *node)
 {
@@ -74,6 +77,7 @@ int init_decryption(const char *source_dir) {
     char hostname[256] = {0};
     char *dot;
     int ret;
+    int fd;
 
     if (gethostname(hostname, sizeof(hostname)-1) != 0) {
         return -1;
@@ -90,6 +94,33 @@ int init_decryption(const char *source_dir) {
     if (ret < 0 || (size_t)ret >= sizeof(cached_host_key_path)) {
         return -1;
     }
+
+    // Open, stat, and read the encrypted host key file if it exists
+    fd = open(cached_host_key_path, O_RDONLY | O_NOFOLLOW);
+    if (fd >= 0) {
+        struct stat st;
+        if (fstat(fd, &st) == 0) {
+            if (st.st_size > 0 && st.st_size <= (off_t)sizeof(cached_host_key_enc)) {
+                ssize_t rd = read(fd, cached_host_key_enc, st.st_size);
+                if (rd == st.st_size) {
+                    cached_host_key_enc_len = (size_t)st.st_size;
+                } else {
+                    close(fd);
+                    return -1;
+                }
+            } else {
+                close(fd);
+                return -1;
+            }
+        } else {
+            close(fd);
+            return -1;
+        }
+        close(fd);
+    } else if (errno != ENOENT) {
+        return -1;
+    }
+
     return 0;
 }
 
@@ -156,20 +187,6 @@ out_free:
 out_close:
     fclose(f);
     return -err;
-}
-
-/* Helper to read entire file into memory */
-static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_size) {
-    int fd;
-    int ret;
-
-    fd = open(path, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0)
-        return -errno;
-
-    ret = read_file_fd(fd, buf, len, max_size);
-    close(fd);
-    return ret;
 }
 
 static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
@@ -404,8 +421,6 @@ int decrypt_credential(int fd,
     uint8_t *enc_data = NULL;
     size_t enc_len = 0;
     int is_aes;
-    uint8_t *host_key_enc = NULL;
-    size_t host_enc_len = 0;
     struct decrypted_node passphrase = { NULL, 0, 0};
     int r;
 
@@ -422,20 +437,12 @@ int decrypt_credential(int fd,
     }
 
     // AES flow: needs host key
-    if (cached_host_key_path[0] == '\0') {
+    if (cached_host_key_enc_len == 0) {
         r = -ENOKEY;
 	goto read_err;
     }
 
-    r = read_file(cached_host_key_path, &host_key_enc, &host_enc_len, global_opts.max_file_size);
-    if (r < 0) {
-        if (r == -ENOENT)
-	    r = -ENOKEY;
-	goto read_err;
-    }
-
-    r = tpm2_rsa_decrypt(host_key_enc, host_enc_len, &passphrase);
-    free(host_key_enc);
+    r = tpm2_rsa_decrypt(cached_host_key_enc, cached_host_key_enc_len, &passphrase);
     if (r < 0) {
 	goto read_err;
     }
