@@ -36,6 +36,7 @@
 
 #include "decryption.h"
 #include "inode.h"
+#include "path.h"
 
 struct cred_fuse_opts global_opts;
 
