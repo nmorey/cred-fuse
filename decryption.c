@@ -41,21 +41,36 @@ static char cached_host_key_path[PATH_MAX] = {0};
 static uint8_t cached_host_key_enc[512] = {0};
 static size_t cached_host_key_enc_len = 0;
 
+static long system_page_size = 4096;
+
+static inline size_t get_aligned_size(size_t size) {
+    if (mlockall_active) {
+        return size;
+    }
+    size_t page_size = (size_t)system_page_size;
+    if (size > SIZE_MAX - page_size + 1) {
+        return SIZE_MAX;
+    }
+    return ((size + page_size - 1) / page_size) * page_size;
+}
+
 static void *malloc_mlock(size_t size)
 {
-    uint8_t *ptr = NULL;
-
-    ptr = malloc(size);
-    if (!ptr) {
-        return NULL;
-    }
+    void *ptr = NULL;
     if (!mlockall_active) {
-        if (mlock(ptr, size) != 0) {
+        size_t aligned_size = get_aligned_size(size);
+        size_t page_size = (size_t)system_page_size;
+        if (posix_memalign(&ptr, page_size, aligned_size) != 0) {
+            return NULL;
+        }
+        if (mlock(ptr, aligned_size) != 0) {
             int saved_errno = errno;
             free(ptr);
             errno = saved_errno;
             return NULL;
         }
+    } else {
+        ptr = malloc(size);
     }
     return ptr;
 }
@@ -65,9 +80,10 @@ static void free_munlock(void *ptr, size_t size)
     if (!ptr)
 	return;
 
-    OPENSSL_cleanse(ptr, size);
+    size_t aligned_size = get_aligned_size(size);
+    OPENSSL_cleanse(ptr, aligned_size);
     if (!mlockall_active) {
-        munlock(ptr, size);
+        munlock(ptr, aligned_size);
     }
     free(ptr);
 }
@@ -88,6 +104,12 @@ int init_decryption(const char *source_dir) {
     char *dot;
     int ret;
     int fd;
+    long p_sz;
+
+    p_sz = sysconf(_SC_PAGESIZE);
+    if (p_sz > 0) {
+        system_page_size = p_sz;
+    }
 
     if (gethostname(hostname, sizeof(hostname)-1) != 0) {
         return -1;
