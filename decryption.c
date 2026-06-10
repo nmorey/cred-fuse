@@ -320,7 +320,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     }
 out_msg:
     if (message) {
-        OPENSSL_cleanse(message->buffer, message->size);
+        OPENSSL_cleanse(message->buffer, sizeof(message->buffer));
         Esys_Free(message);
     }
 out_session:
