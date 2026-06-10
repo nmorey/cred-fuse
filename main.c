@@ -228,6 +228,63 @@ static int build_path(char *dest, size_t size, const char *rel_path) {
     return 0;
 }
 
+/* Safely open, query, and validate file metadata using a secure file descriptor */
+static int open_and_validate_path(const char *full_path, struct stat *st_out) {
+    int fd = open(full_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return -errno;
+    }
+
+    if (fstat(fd, st_out) != 0) {
+        int err = -errno;
+        close(fd);
+        return err;
+    }
+
+    if (S_ISLNK(st_out->st_mode)) {
+        close(fd);
+        return -ELOOP;
+    }
+
+    if (S_ISREG(st_out->st_mode)) {
+        char xattr_buf[64] = {0};
+        ssize_t s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
+        if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
+            close(fd);
+            return -ENOENT;
+        }
+
+        char *endptr;
+        long parsed_size;
+        xattr_buf[s] = '\0';
+        errno = 0;
+        parsed_size = strtol(xattr_buf, &endptr, 16);
+        if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
+            close(fd);
+            return -ENOENT;
+        }
+        st_out->st_size = parsed_size;
+    }
+
+    return fd;
+}
+
+/* Resolve an inode to its path, open it safely, and validate metadata */
+static int open_and_validate_ino(fuse_ino_t ino, struct stat *st_out) {
+    const char *rel_path = get_inode_path(ino);
+    if (!rel_path) {
+        return -ENOENT;
+    }
+
+    char full_path[PATH_MAX];
+    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    if (path_ret < 0) {
+        return path_ret;
+    }
+
+    return open_and_validate_path(full_path, st_out);
+}
+
 /* 1. LOOKUP: Translate a path component to an inode */
 static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
     struct fuse_entry_param e;
@@ -257,36 +314,12 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     }
 
     struct stat st;
-    if (lstat(full_path, &st) != 0) {
-        fuse_reply_err(req, errno);
+    int fd = open_and_validate_path(full_path, &st);
+    if (fd < 0) {
+        fuse_reply_err(req, -fd);
         return;
     }
-
-    if (S_ISLNK(st.st_mode)) {
-        fuse_reply_err(req, ELOOP);
-        return;
-    }
-
-    // For regular files, check user.size xattr
-    if (S_ISREG(st.st_mode)) {
-        char xattr_buf[64] = {0};
-        ssize_t s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
-        if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
-            char *endptr;
-            long parsed_size;
-            xattr_buf[s] = '\0';
-            errno = 0;
-            parsed_size = strtol(xattr_buf, &endptr, 16);
-            if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
-                fuse_reply_err(req, ENOENT);
-                return;
-            }
-            st.st_size = parsed_size;
-        } else {
-            fuse_reply_err(req, ENOENT);
-            return;
-        }
-    }
+    close(fd);
 
     fuse_ino_t new_ino = add_inode(rel_path);
     if (new_ino == 0) {
@@ -309,49 +342,13 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
 /* 2. GETATTR: Retrieve file or directory attributes */
 static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
     (void)fi;
-    const char *rel_path = get_inode_path(ino);
-    if (!rel_path) {
-        fuse_reply_err(req, ENOENT);
-        return;
-    }
-
-    char full_path[PATH_MAX];
-    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
-    if (path_ret < 0) {
-        fuse_reply_err(req, -path_ret);
-        return;
-    }
-
     struct stat st;
-    if (lstat(full_path, &st) != 0) {
-        fuse_reply_err(req, errno);
+    int fd = open_and_validate_ino(ino, &st);
+    if (fd < 0) {
+        fuse_reply_err(req, -fd);
         return;
     }
-
-    if (S_ISLNK(st.st_mode)) {
-        fuse_reply_err(req, ELOOP);
-        return;
-    }
-
-    if (S_ISREG(st.st_mode)) {
-        char xattr_buf[64] = {0};
-        ssize_t s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
-        if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
-            char *endptr;
-            long parsed_size;
-            xattr_buf[s] = '\0';
-            errno = 0;
-            parsed_size = strtol(xattr_buf, &endptr, 16);
-            if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
-                fuse_reply_err(req, ENOENT);
-                return;
-            }
-            st.st_size = parsed_size;
-        } else {
-            fuse_reply_err(req, ENOENT);
-            return;
-        }
-    }
+    close(fd);
 
     st.st_ino = ino;
     st.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
@@ -360,70 +357,20 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
 
 /* 3. OPEN: Open a file safely */
 static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
-    const char *rel_path = get_inode_path(ino);
-    if (!rel_path) {
-        fuse_reply_err(req, ENOENT);
-        return;
-    }
-
-    char full_path[PATH_MAX];
-    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
-    if (path_ret < 0) {
-        fuse_reply_err(req, -path_ret);
-        return;
-    }
-
-    // Open file once to prevent TOCTOU races
-    int fd = open(full_path, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) {
-        if (errno == ELOOP) {
-            fuse_reply_err(req, ELOOP);
-        } else {
-            fuse_reply_err(req, errno);
-        }
-        return;
-    }
-
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        close(fd);
-        fuse_reply_err(req, errno);
-        return;
-    }
-
-    if (S_ISLNK(st.st_mode)) {
-        close(fd);
-        fuse_reply_err(req, ELOOP);
-        return;
-    }
-
     // Only allow read access
     if ((fi->flags & O_ACCMODE) != O_RDONLY) {
-        close(fd);
         fuse_reply_err(req, EACCES);
         return;
     }
 
+    struct stat st;
+    int fd = open_and_validate_ino(ino, &st);
+    if (fd < 0) {
+        fuse_reply_err(req, -fd);
+        return;
+    }
+
     fi->direct_io = 1;
-
-    char xattr_buf[64] = {0};
-    ssize_t s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
-    if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
-        close(fd);
-        fuse_reply_err(req, ENOENT);
-        return;
-    }
-
-    char *endptr;
-    long parsed_size;
-    xattr_buf[s] = '\0';
-    errno = 0;
-    parsed_size = strtol(xattr_buf, &endptr, 16);
-    if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
-        close(fd);
-        fuse_reply_err(req, ENOENT);
-        return;
-    }
 
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
@@ -452,8 +399,8 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
 
-    if (node->len > (size_t)parsed_size) {
-        node->len = (size_t)parsed_size;
+    if (node->len > (size_t)st.st_size) {
+        node->len = (size_t)st.st_size;
     }
 
     fi->fh = (uint64_t)node;
@@ -568,23 +515,16 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
 
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
             char subpath[PATH_MAX];
-            struct stat tmp_st;
             int sn_ret = snprintf(subpath, sizeof(subpath), "%s/%s", full_path, de->d_name);
             if (sn_ret < 0 || (size_t)sn_ret >= sizeof(subpath)) {
                 continue;
             }
-            if (lstat(subpath, &tmp_st) == 0) {
-                if (S_ISLNK(tmp_st.st_mode)) {
-                    continue; // Skip symbolic links
-                }
-                if (S_ISREG(tmp_st.st_mode)) {
-                    char xattr_buf[64] = {0};
-                    ssize_t s = lgetxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
-                    if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
-                        continue; // Skip unmanaged files entirely
-                    }
-                }
+            struct stat tmp_st;
+            int fd = open_and_validate_path(subpath, &tmp_st);
+            if (fd < 0) {
+                continue; // Skip invalid, unmanaged, or symlinked files cleanly
             }
+            close(fd);
         }
 
         // Construct the relative path of this entry to register or find its inode
