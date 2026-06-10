@@ -278,6 +278,10 @@ static int cred_read(const char *path, char *buf, size_t size, off_t offset,
     if (!node || !node->buf)
 	return -EIO;
 
+    if (offset < 0) {
+        return -EINVAL;
+    }
+
     if ((size_t)offset >= node->len) {
         return 0;
     }
