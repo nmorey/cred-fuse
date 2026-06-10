@@ -117,7 +117,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
 
     fuse_ino_t new_ino = add_inode(rel_path);
     if (new_ino == 0) {
-        fuse_reply_err(req, ENOMEM);
+        fuse_reply_err(req, errno);
         return;
     }
 

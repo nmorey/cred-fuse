@@ -111,6 +111,7 @@ fuse_ino_t add_inode(const char *rel_path) {
     // Allocate next free inode ID
     fuse_ino_t new_ino = allocate_inode_num();
     if (!new_ino) {
+        errno = ENOSPC;
         pthread_rwlock_unlock(&inode_lock);
         return 0; // Cache full
     }
@@ -118,6 +119,7 @@ fuse_ino_t add_inode(const char *rel_path) {
     char *path_copy = strdup(rel_path);
     if (!path_copy) {
         clear_inode_bit(new_ino);
+        errno = ENOMEM;
         pthread_rwlock_unlock(&inode_lock);
         return 0;
     }
