@@ -20,6 +20,7 @@ struct decrypted_node {
 };
 
 extern struct cred_fuse_opts global_opts;
+extern int mlockall_active;
 /*
  * Cleanse, munlock and free the buffer attached to a decrypted_node
  */

@@ -40,6 +40,7 @@ enum {
 };
 
 static int is_ro = 0;
+int mlockall_active = 0;
 
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
 static const struct fuse_opt cred_opts[] = {
@@ -304,7 +305,24 @@ static int cred_release(const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
+
+static void *cred_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+    (void)conn;
+    (void)cfg;
+
+    // Lock all current and future memory to prevent swapping secrets (after daemon fork)
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+        mlockall_active = 1;
+    } else {
+        mlockall_active = 0;
+        fprintf(stderr, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.\n", strerror(errno));
+    }
+
+    return NULL;
+}
+
 static const struct fuse_operations cred_oper = {
+    .init    = cred_init,
     .getattr = cred_getattr,
     .readdir = cred_readdir,
     .open    = cred_open,

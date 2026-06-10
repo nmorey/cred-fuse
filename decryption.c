@@ -44,7 +44,9 @@ void clean_decrypted_node(struct decrypted_node *node)
 	return;
 
     OPENSSL_cleanse(node->buf, node->allocated_size);
-    munlock(node->buf, node->allocated_size);
+    if (!mlockall_active) {
+        munlock(node->buf, node->allocated_size);
+    }
     free(node->buf);
     node->buf = NULL;
 
@@ -59,9 +61,11 @@ static void *malloc_mlock(size_t size)
     if (!ptr) {
         return NULL;
     }
-    if (mlock(ptr, size) != 0) {
-        free(ptr);
-        return NULL;
+    if (!mlockall_active) {
+        if (mlock(ptr, size) != 0) {
+            free(ptr);
+            return NULL;
+        }
     }
     return ptr;
 }
@@ -219,11 +223,13 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         goto out_msg;
     }
 
-    if (mlock(message->buffer, message->size) != 0) {
-        ret_err = -errno;
-        goto out_msg;
+    if (!mlockall_active) {
+        if (mlock(message->buffer, message->size) != 0) {
+            ret_err = -errno;
+            goto out_msg;
+        }
+        mlocked = 1;
     }
-    mlocked = 1;
 
     out->buf = copy_tpm_message(message);
 
