@@ -203,6 +203,10 @@ static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
 static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
     uint8_t *ptr;
 
+    if (message->size > sizeof(message->buffer)) {
+        return NULL;
+    }
+
     ptr = malloc_mlock(message->size);
     if (!ptr) {
         return NULL;
