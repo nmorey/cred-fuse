@@ -128,7 +128,7 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
         xattr_buf[s] = '\0';
         errno = 0;
         parsed_size = strtol(xattr_buf, &endptr, 16);
-        if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
+        if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0 || parsed_size > global_opts.max_file_size) {
             close(fd);
             return -ENOENT;
         }
