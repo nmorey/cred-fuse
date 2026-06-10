@@ -344,7 +344,9 @@ out_session:
         Esys_TR_Close(esys_ctx, &session_handle);
     }
 out_key:
-    Esys_TR_Close(esys_ctx, &key_handle);
+    if (key_handle != ESYS_TR_NONE) {
+        Esys_TR_Close(esys_ctx, &key_handle);
+    }
 out_esys:
     Esys_Finalize(&esys_ctx);
 out_tcti:
