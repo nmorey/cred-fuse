@@ -14,9 +14,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#define FUSE_USE_VERSION 35
+#define FUSE_USE_VERSION 312
 
-#include <fuse3/fuse.h>
+#include <fuse3/fuse_lowlevel.h>
+#include <fuse3/fuse_common.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include <sys/prctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <pthread.h>
 
 #include "decryption.h"
 
@@ -71,6 +73,71 @@ static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outa
 
 static int current_open_files = 0;
 
+/* Thread-safe Path-to-Inode lookup table */
+struct inode_entry {
+    fuse_ino_t ino;
+    char *path;
+};
+
+static struct inode_entry *inodes = NULL;
+static size_t inodes_count = 0;
+static size_t inodes_max = 0;
+static pthread_mutex_t inode_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static fuse_ino_t add_inode(const char *rel_path) {
+    pthread_mutex_lock(&inode_lock);
+    
+    // Check if rel_path already has an inode
+    for (size_t i = 0; i < inodes_count; i++) {
+        if (strcmp(inodes[i].path, rel_path) == 0) {
+            pthread_mutex_unlock(&inode_lock);
+            return inodes[i].ino;
+        }
+    }
+    
+    // Allocate more space if needed
+    if (inodes_count >= inodes_max) {
+        inodes_max = inodes_max == 0 ? 1024 : inodes_max * 2;
+        inodes = realloc(inodes, inodes_max * sizeof(struct inode_entry));
+    }
+    
+    fuse_ino_t new_ino = (fuse_ino_t)(inodes_count + 2); // 1 is root
+    inodes[inodes_count].ino = new_ino;
+    inodes[inodes_count].path = strdup(rel_path);
+    inodes_count++;
+    
+    pthread_mutex_unlock(&inode_lock);
+    return new_ino;
+}
+
+static const char *get_inode_path(fuse_ino_t ino) {
+    if (ino == 1) {
+        return "/";
+    }
+    pthread_mutex_lock(&inode_lock);
+    for (size_t i = 0; i < inodes_count; i++) {
+        if (inodes[i].ino == ino) {
+            const char *path = inodes[i].path;
+            pthread_mutex_unlock(&inode_lock);
+            return path;
+        }
+    }
+    pthread_mutex_unlock(&inode_lock);
+    return NULL;
+}
+
+static void cleanup_inodes(void) {
+    pthread_mutex_lock(&inode_lock);
+    for (size_t i = 0; i < inodes_count; i++) {
+        free(inodes[i].path);
+    }
+    free(inodes);
+    inodes = NULL;
+    inodes_count = 0;
+    inodes_max = 0;
+    pthread_mutex_unlock(&inode_lock);
+}
+
 /* Convert relative fuse path to absolute path in source_dir */
 static int build_path(char *dest, size_t size, const char *rel_path) {
     int ret;
@@ -106,247 +173,371 @@ static int build_path(char *dest, size_t size, const char *rel_path) {
     return 0;
 }
 
-static int cred_getattr(const char *path, struct stat *stbuf,
-			struct fuse_file_info *fi __attribute__((unused))) {
-    char full_path[PATH_MAX];
-    int res;
-
-    if (build_path(full_path, sizeof(full_path), path) < 0)
-        return -ENAMETOOLONG;
-
-    res = lstat(full_path, stbuf);
-    if (res == -1)
-	return -errno;
-
-    if (S_ISLNK(stbuf->st_mode)) {
-        return -ELOOP;
+/* 1. LOOKUP: Translate a path component to an inode */
+static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
+    struct fuse_entry_param e;
+    const char *parent_path = get_inode_path(parent);
+    if (!parent_path) {
+        fuse_reply_err(req, ENOENT);
+        return;
     }
-
-    stbuf->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
-
+    
+    char rel_path[PATH_MAX];
+    int sn_ret;
+    if (strcmp(parent_path, "/") == 0) {
+        sn_ret = snprintf(rel_path, sizeof(rel_path), "/%s", name);
+    } else {
+        sn_ret = snprintf(rel_path, sizeof(rel_path), "%s/%s", parent_path, name);
+    }
+    if (sn_ret < 0 || (size_t)sn_ret >= sizeof(rel_path)) {
+        fuse_reply_err(req, ENAMETOOLONG);
+        return;
+    }
+    
+    char full_path[PATH_MAX];
+    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
+        fuse_reply_err(req, ENAMETOOLONG);
+        return;
+    }
+    
+    struct stat st;
+    if (lstat(full_path, &st) != 0) {
+        fuse_reply_err(req, errno);
+        return;
+    }
+    
+    if (S_ISLNK(st.st_mode)) {
+        fuse_reply_err(req, ELOOP);
+        return;
+    }
+    
     // For regular files, check user.size xattr
-    if (S_ISREG(stbuf->st_mode)) {
+    if (S_ISREG(st.st_mode)) {
         char xattr_buf[64] = {0};
-        ssize_t s;
-
-        s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
+        ssize_t s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
         if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
             char *endptr;
             long parsed_size;
-
             xattr_buf[s] = '\0';
             errno = 0;
             parsed_size = strtol(xattr_buf, &endptr, 16);
             if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
-                return -ENOENT;
+                fuse_reply_err(req, ENOENT);
+                return;
             }
-            stbuf->st_size = parsed_size;
+            st.st_size = parsed_size;
         } else {
-            return -ENOENT;
+            fuse_reply_err(req, ENOENT);
+            return;
         }
     }
-
-    return 0;
+    
+    memset(&e, 0, sizeof(e));
+    e.ino = add_inode(rel_path);
+    e.attr_timeout = 1.0;
+    e.entry_timeout = 1.0;
+    e.attr = st;
+    e.attr.st_ino = e.ino;
+    e.attr.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    
+    fuse_reply_entry(req, &e);
 }
 
-static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                        off_t offset,
-			struct fuse_file_info *fi,
-                        enum fuse_readdir_flags flags) {
-    char full_path[PATH_MAX];
-    DIR *dp;
-    struct dirent *de;
-
+/* 2. GETATTR: Retrieve file or directory attributes */
+static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
     (void)fi;
-    (void)flags;
-
-    if (build_path(full_path, sizeof(full_path), path) < 0)
-        return -ENAMETOOLONG;
-
-    dp = opendir(full_path);
-    if (!dp)
-	return -errno;
-
-    if (offset > 0)
-        seekdir(dp, offset);
-
-    while ((de = readdir(dp)) != NULL) {
-        struct stat st;
-        off_t next_off;
-
-        next_off = telldir(dp);
-
-        if (de->d_type == DT_LNK) {
-            continue; // Skip symbolic links entirely
-        }
-
-        if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
-            char subpath[PATH_MAX];
-            struct stat tmp_st;
-            int sn_ret;
-
-            sn_ret = snprintf(subpath, sizeof(subpath), "%s/%s", full_path, de->d_name);
-            if (sn_ret < 0 || (size_t)sn_ret >= sizeof(subpath))
-                continue; // Skip if path creation failed or was truncated
-
-            if (lstat(subpath, &tmp_st) == 0) {
-                if (S_ISLNK(tmp_st.st_mode)) {
-                    continue; // Skip symbolic links
-                }
-                if (S_ISREG(tmp_st.st_mode)) {
-                    char xattr_buf[64] = {0};
-                    ssize_t s;
-
-                    s = lgetxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
-                    if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf))
-		        continue; // Skip unmanaged files entirely
-                }
-            }
-        }
-
-        memset(&st, 0, sizeof(st));
-        st.st_ino = de->d_ino;
-        st.st_mode = de->d_type << 12;
-        if (filler(buf, de->d_name, &st, next_off, 0))
-	    break;
+    const char *rel_path = get_inode_path(ino);
+    if (!rel_path) {
+        fuse_reply_err(req, ENOENT);
+        return;
     }
-
-    closedir(dp);
-    return 0;
+    
+    char full_path[PATH_MAX];
+    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
+        fuse_reply_err(req, ENAMETOOLONG);
+        return;
+    }
+    
+    struct stat st;
+    if (lstat(full_path, &st) != 0) {
+        fuse_reply_err(req, errno);
+        return;
+    }
+    
+    if (S_ISLNK(st.st_mode)) {
+        fuse_reply_err(req, ELOOP);
+        return;
+    }
+    
+    if (S_ISREG(st.st_mode)) {
+        char xattr_buf[64] = {0};
+        ssize_t s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
+        if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
+            char *endptr;
+            long parsed_size;
+            xattr_buf[s] = '\0';
+            errno = 0;
+            parsed_size = strtol(xattr_buf, &endptr, 16);
+            if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
+                fuse_reply_err(req, ENOENT);
+                return;
+            }
+            st.st_size = parsed_size;
+        } else {
+            fuse_reply_err(req, ENOENT);
+            return;
+        }
+    }
+    
+    st.st_ino = ino;
+    st.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    fuse_reply_attr(req, &st, 1.0);
 }
 
-static int cred_open(const char *path, struct fuse_file_info *fi) {
+/* 3. OPEN: Open a file safely */
+static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+    const char *rel_path = get_inode_path(ino);
+    if (!rel_path) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+    
     char full_path[PATH_MAX];
-    char xattr_buf[64] = {0};
-    int r;
-    ssize_t s;
-    struct decrypted_node *node;
-    int ret;
-    struct stat st;
-    int fd;
-
-    if (build_path(full_path, sizeof(full_path), path) < 0)
-        return -ENAMETOOLONG;
-
+    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
+        fuse_reply_err(req, ENAMETOOLONG);
+        return;
+    }
+    
     // Open file once to prevent TOCTOU races
-    fd = open(full_path, O_RDONLY | O_NOFOLLOW);
+    int fd = open(full_path, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) {
         if (errno == ELOOP) {
-            return -ELOOP;
+            fuse_reply_err(req, ELOOP);
+        } else {
+            fuse_reply_err(req, errno);
         }
-        return -errno;
+        return;
     }
-
+    
+    struct stat st;
     if (fstat(fd, &st) != 0) {
-        ret = -errno;
-        goto err_close_fd;
+        close(fd);
+        fuse_reply_err(req, errno);
+        return;
     }
-
+    
     if (S_ISLNK(st.st_mode)) {
-        ret = -ELOOP;
-        goto err_close_fd;
+        close(fd);
+        fuse_reply_err(req, ELOOP);
+        return;
     }
-
+    
     // Only allow read access
     if ((fi->flags & O_ACCMODE) != O_RDONLY) {
-        ret = -EACCES;
-        goto err_close_fd;
+        close(fd);
+        fuse_reply_err(req, EACCES);
+        return;
     }
-
+    
     fi->direct_io = 1;
-
-    s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
+    
+    char xattr_buf[64] = {0};
+    ssize_t s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
     if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
-        ret = -ENOENT;
-        goto err_close_fd;
+        close(fd);
+        fuse_reply_err(req, ENOENT);
+        return;
     }
-
+    
     char *endptr;
     long parsed_size;
     xattr_buf[s] = '\0';
     errno = 0;
     parsed_size = strtol(xattr_buf, &endptr, 16);
     if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
-        ret = -ENOENT;
-        goto err_close_fd;
+        close(fd);
+        fuse_reply_err(req, ENOENT);
+        return;
     }
-
+    
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
-        ret = -ENFILE;
-        goto err_open_files;
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        close(fd);
+        fuse_reply_err(req, ENFILE);
+        return;
     }
-
-    node = malloc(sizeof(struct decrypted_node));
+    
+    struct decrypted_node *node = malloc(sizeof(struct decrypted_node));
     if (!node) {
-        ret = -ENOMEM;
-        goto err_open_files;
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        close(fd);
+        fuse_reply_err(req, ENOMEM);
+        return;
     }
     memset(node, 0, sizeof(*node));
-
-    r = decrypt_credential(fd, node);
+    
+    int r = decrypt_credential(fd, node);
     if (r < 0) {
-        ret = r;
-        goto err_decrypt;
+        clean_decrypted_node(node);
+        free(node);
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        close(fd);
+        fuse_reply_err(req, -r);
+        return;
     }
-
+    
     if (node->len > (size_t)parsed_size) {
         node->len = (size_t)parsed_size;
     }
-
+    
     fi->fh = (uint64_t)node;
     close(fd);
-    return 0;
-
- err_decrypt:
-    clean_decrypted_node(node);
-    free(node);
- err_open_files:
-    __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
- err_close_fd:
-    close(fd);
-    return ret;
+    fuse_reply_open(req, fi);
 }
 
-static int cred_read(const char *path, char *buf, size_t size, off_t offset,
-                     struct fuse_file_info *fi) {
+/* 4. READ: Secure low-level zero-copy data reply directly from our mlocked buffer */
+static void cred_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
+    (void)ino;
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
-    size_t avail;
-
-    (void)path;
-
-    if (!node || !node->buf)
-	return -EIO;
-
-    if (offset < 0) {
-        return -EINVAL;
+    if (!node || !node->buf) {
+        fuse_reply_err(req, EIO);
+        return;
     }
-
-    if ((size_t)offset >= node->len) {
-        return 0;
+    
+    if (off < 0) {
+        fuse_reply_err(req, EINVAL);
+        return;
     }
-
-    avail = node->len - offset;
-    if (size > avail)
-	size = avail;
-
-    memcpy(buf, node->buf + offset, size);
-    return size;
+    
+    if ((size_t)off >= node->len) {
+        fuse_reply_buf(req, NULL, 0);
+        return;
+    }
+    
+    size_t avail = node->len - off;
+    if (size > avail) {
+        size = avail;
+    }
+    
+    fuse_reply_buf(req, (const char *)node->buf + off, size);
 }
 
-static int cred_release(const char *path, struct fuse_file_info *fi) {
+/* 5. RELEASE: Secure cleanup and resource recycling */
+static void cred_ll_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+    (void)ino;
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
-
-    (void)path;
-
     if (node) {
         clean_decrypted_node(node);
         free(node);
     }
-
     __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    fuse_reply_err(req, 0);
+}
 
-    return 0;
+/* 6. READDIR: Formats directory entries directly */
+struct dir_buf {
+    char *p;
+    size_t size;
+};
+
+static void dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse_ino_t ino) {
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    st.st_ino = ino;
+    
+    size_t oldsize = b->size;
+    b->size += fuse_add_direntry(req, NULL, 0, name, NULL, 0);
+    b->p = realloc(b->p, b->size);
+    fuse_add_direntry(req, b->p + oldsize, b->size - oldsize, name, &st, b->size);
+}
+
+static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
+    (void)fi;
+    const char *rel_path = get_inode_path(ino);
+    if (!rel_path) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+    
+    char full_path[PATH_MAX];
+    if (build_path(full_path, sizeof(full_path), rel_path) < 0) {
+        fuse_reply_err(req, ENAMETOOLONG);
+        return;
+    }
+    
+    DIR *dp = opendir(full_path);
+    if (!dp) {
+        fuse_reply_err(req, errno);
+        return;
+    }
+    
+    struct dir_buf b;
+    memset(&b, 0, sizeof(b));
+    
+    // Add standard directory directory markers
+    dir_buf_add(req, &b, ".", ino);
+    dir_buf_add(req, &b, "..", 1);
+    
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
+            continue;
+        }
+        
+        if (de->d_type == DT_LNK) {
+            continue; // Skip symbolic links entirely
+        }
+        
+        if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
+            char subpath[PATH_MAX];
+            struct stat tmp_st;
+            int sn_ret = snprintf(subpath, sizeof(subpath), "%s/%s", full_path, de->d_name);
+            if (sn_ret < 0 || (size_t)sn_ret >= sizeof(subpath)) {
+                continue;
+            }
+            if (lstat(subpath, &tmp_st) == 0) {
+                if (S_ISLNK(tmp_st.st_mode)) {
+                    continue; // Skip symbolic links
+                }
+                if (S_ISREG(tmp_st.st_mode)) {
+                    char xattr_buf[64] = {0};
+                    ssize_t s = lgetxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
+                    if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
+                        continue; // Skip unmanaged files entirely
+                    }
+                }
+            }
+        }
+        
+        // Construct the relative path of this entry to register or find its inode
+        char entry_rel_path[PATH_MAX];
+        int sn_ret;
+        if (strcmp(rel_path, "/") == 0) {
+            sn_ret = snprintf(entry_rel_path, sizeof(entry_rel_path), "/%s", de->d_name);
+        } else {
+            sn_ret = snprintf(entry_rel_path, sizeof(entry_rel_path), "%s/%s", rel_path, de->d_name);
+        }
+        if (sn_ret < 0 || (size_t)sn_ret >= sizeof(entry_rel_path)) {
+            continue;
+        }
+        
+        fuse_ino_t entry_ino = add_inode(entry_rel_path);
+        dir_buf_add(req, &b, de->d_name, entry_ino);
+    }
+    closedir(dp);
+    
+    if (off < (off_t)b.size) {
+        size_t chunk = b.size - off;
+        if (chunk > size) {
+            chunk = size;
+        }
+        fuse_reply_buf(req, b.p + off, chunk);
+    } else {
+        fuse_reply_buf(req, NULL, 0);
+    }
+    
+    free(b.p);
 }
 
 static int validate_tcti(const char *tcti) {
@@ -367,33 +558,12 @@ static int validate_tcti(const char *tcti) {
     return 0;
 }
 
-static void *cred_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-    (void)conn;
-    (void)cfg;
-
-    // Lock all current and future memory to prevent swapping secrets (after daemon fork)
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
-        mlockall_active = 1;
-    } else {
-        mlockall_active = 0;
-        fprintf(stderr, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.\n", strerror(errno));
-    }
-
-    return NULL;
-}
-
-static const struct fuse_operations cred_oper = {
-    .init    = cred_init,
-    .getattr = cred_getattr,
-    .readdir = cred_readdir,
-    .open    = cred_open,
-    .read    = cred_read,
-    .release = cred_release,
-};
-
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    int ret;
+    struct fuse_session *se;
+    struct fuse_cmdline_opts opts;
+    struct fuse_loop_config *config = NULL;
+    int ret = -1;
 
     // Disable core dumps
     if (prctl(PR_SET_DUMPABLE, 0) != 0) {
@@ -456,12 +626,85 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    ret = fuse_main(args.argc, args.argv, &cred_oper, NULL);
-    fuse_opt_free_args(&args);
+    /* Parse mounting options and extract mountpoint */
+    if (fuse_parse_cmdline(&args, &opts) != 0) {
+        return 1;
+    }
 
+    if (opts.mountpoint == NULL) {
+        fprintf(stderr, "Error: No mountpoint specified.\n");
+        free(opts.mountpoint);
+        return 1;
+    }
+
+    static const struct fuse_lowlevel_ops cred_ll_oper = {
+        .lookup  = cred_ll_lookup,
+        .getattr = cred_ll_getattr,
+        .open    = cred_ll_open,
+        .read    = cred_ll_read,
+        .readdir = cred_ll_readdir,
+        .release = cred_ll_release,
+    };
+
+    se = fuse_session_new(&args, &cred_ll_oper, sizeof(cred_ll_oper), NULL);
+    if (se == NULL) {
+        free(opts.mountpoint);
+        fuse_opt_free_args(&args);
+        return 1;
+    }
+
+    if (fuse_set_signal_handlers(se) != 0) {
+        fuse_session_destroy(se);
+        free(opts.mountpoint);
+        fuse_opt_free_args(&args);
+        return 1;
+    }
+
+    if (fuse_session_mount(se, opts.mountpoint) != 0) {
+        fuse_remove_signal_handlers(se);
+        fuse_session_destroy(se);
+        free(opts.mountpoint);
+        fuse_opt_free_args(&args);
+        return 1;
+    }
+
+    /* Handle standard daemonization background fork */
+    fuse_daemonize(opts.foreground);
+
+    // Lock all current and future memory to prevent swapping secrets (post-fork daemon context)
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+        mlockall_active = 1;
+    } else {
+        mlockall_active = 0;
+        fprintf(stderr, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.\n", strerror(errno));
+    }
+
+    atexit(cleanup_inodes);
+
+    /* Run standard event loop */
+    if (opts.singlethread) {
+        ret = fuse_session_loop(se);
+    } else {
+        config = fuse_loop_cfg_create();
+        if (config == NULL) {
+            ret = 1;
+            goto err_unmount;
+        }
+        fuse_loop_cfg_set_clone_fd(config, opts.clone_fd);
+        fuse_loop_cfg_set_max_threads(config, opts.max_threads);
+        ret = fuse_session_loop_mt(se, config);
+        fuse_loop_cfg_destroy(config);
+    }
+
+err_unmount:
+    fuse_session_unmount(se);
+    fuse_remove_signal_handlers(se);
+    fuse_session_destroy(se);
+    free(opts.mountpoint);
     free(global_opts.source_dir);
     free(global_opts.tpm_handle_str);
     free(global_opts.tcti);
+    fuse_opt_free_args(&args);
 
     return ret;
 }
