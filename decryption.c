@@ -95,9 +95,7 @@ void clean_decrypted_node(struct decrypted_node *node)
 	return;
 
     free_munlock(node->buf, node->allocated_size);
-    node->buf = NULL;
-
-    return;
+    memset(node, 0, sizeof(*node));
 }
 
 int init_decryption(const char *source_dir) {
