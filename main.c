@@ -87,7 +87,7 @@ static pthread_mutex_t inode_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static fuse_ino_t add_inode(const char *rel_path) {
     pthread_mutex_lock(&inode_lock);
-    
+
     // Check if rel_path already has an inode
     for (size_t i = 0; i < inodes_count; i++) {
         if (strcmp(inodes[i].path, rel_path) == 0) {
@@ -95,7 +95,7 @@ static fuse_ino_t add_inode(const char *rel_path) {
             return inodes[i].ino;
         }
     }
-    
+
     // Allocate more space if needed
     if (inodes_count >= inodes_max) {
         size_t new_max = inodes_max == 0 ? 1024 : inodes_max * 2;
@@ -107,19 +107,19 @@ static fuse_ino_t add_inode(const char *rel_path) {
         inodes = temp;
         inodes_max = new_max;
     }
-    
+
     char *path_copy = strdup(rel_path);
     if (!path_copy) {
         pthread_mutex_unlock(&inode_lock);
         return 0;
     }
-    
+
     fuse_ino_t new_ino = (fuse_ino_t)(inodes_count + 2); // 1 is root
     inodes[inodes_count].ino = new_ino;
     inodes[inodes_count].path = path_copy;
     inodes[inodes_count].refcount = 0;
     inodes_count++;
-    
+
     pthread_mutex_unlock(&inode_lock);
     return new_ino;
 }
@@ -150,7 +150,7 @@ static void cred_ll_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
             } else {
                 inodes[i].refcount = 0;
             }
-            
+
             if (inodes[i].refcount == 0) {
                 free(inodes[i].path);
                 if (i < inodes_count - 1) {
@@ -236,7 +236,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     char rel_path[PATH_MAX];
     int sn_ret;
     if (strcmp(parent_path, "/") == 0) {
@@ -248,25 +248,25 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         fuse_reply_err(req, ENAMETOOLONG);
         return;
     }
-    
+
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
         fuse_reply_err(req, -path_ret);
         return;
     }
-    
+
     struct stat st;
     if (lstat(full_path, &st) != 0) {
         fuse_reply_err(req, errno);
         return;
     }
-    
+
     if (S_ISLNK(st.st_mode)) {
         fuse_reply_err(req, ELOOP);
         return;
     }
-    
+
     // For regular files, check user.size xattr
     if (S_ISREG(st.st_mode)) {
         char xattr_buf[64] = {0};
@@ -287,14 +287,14 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
             return;
         }
     }
-    
+
     fuse_ino_t new_ino = add_inode(rel_path);
     if (new_ino == 0) {
         fuse_reply_err(req, ENOMEM);
         return;
     }
     inode_lookup_inc(new_ino);
-    
+
     memset(&e, 0, sizeof(e));
     e.ino = new_ino;
     e.attr_timeout = 1.0;
@@ -302,7 +302,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     e.attr = st;
     e.attr.st_ino = e.ino;
     e.attr.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
-    
+
     fuse_reply_entry(req, &e);
 }
 
@@ -314,25 +314,25 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
         fuse_reply_err(req, -path_ret);
         return;
     }
-    
+
     struct stat st;
     if (lstat(full_path, &st) != 0) {
         fuse_reply_err(req, errno);
         return;
     }
-    
+
     if (S_ISLNK(st.st_mode)) {
         fuse_reply_err(req, ELOOP);
         return;
     }
-    
+
     if (S_ISREG(st.st_mode)) {
         char xattr_buf[64] = {0};
         ssize_t s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
@@ -352,7 +352,7 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
             return;
         }
     }
-    
+
     st.st_ino = ino;
     st.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
     fuse_reply_attr(req, &st, 1.0);
@@ -365,14 +365,14 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
         fuse_reply_err(req, -path_ret);
         return;
     }
-    
+
     // Open file once to prevent TOCTOU races
     int fd = open(full_path, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) {
@@ -383,29 +383,29 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         }
         return;
     }
-    
+
     struct stat st;
     if (fstat(fd, &st) != 0) {
         close(fd);
         fuse_reply_err(req, errno);
         return;
     }
-    
+
     if (S_ISLNK(st.st_mode)) {
         close(fd);
         fuse_reply_err(req, ELOOP);
         return;
     }
-    
+
     // Only allow read access
     if ((fi->flags & O_ACCMODE) != O_RDONLY) {
         close(fd);
         fuse_reply_err(req, EACCES);
         return;
     }
-    
+
     fi->direct_io = 1;
-    
+
     char xattr_buf[64] = {0};
     ssize_t s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
     if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
@@ -413,7 +413,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     char *endptr;
     long parsed_size;
     xattr_buf[s] = '\0';
@@ -424,7 +424,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
@@ -432,7 +432,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         fuse_reply_err(req, ENFILE);
         return;
     }
-    
+
     struct decrypted_node *node = malloc(sizeof(struct decrypted_node));
     if (!node) {
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
@@ -441,7 +441,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
     memset(node, 0, sizeof(*node));
-    
+
     int r = decrypt_credential(fd, node);
     if (r < 0) {
         clean_decrypted_node(node);
@@ -451,11 +451,11 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         fuse_reply_err(req, -r);
         return;
     }
-    
+
     if (node->len > (size_t)parsed_size) {
         node->len = (size_t)parsed_size;
     }
-    
+
     fi->fh = (uint64_t)node;
     close(fd);
     fuse_reply_open(req, fi);
@@ -469,22 +469,22 @@ static void cred_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
         fuse_reply_err(req, EIO);
         return;
     }
-    
+
     if (off < 0) {
         fuse_reply_err(req, EINVAL);
         return;
     }
-    
+
     if ((size_t)off >= node->len) {
         fuse_reply_buf(req, NULL, 0);
         return;
     }
-    
+
     size_t avail = node->len - off;
     if (size > avail) {
         size = avail;
     }
-    
+
     fuse_reply_buf(req, (const char *)node->buf + off, size);
 }
 
@@ -510,7 +510,7 @@ static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse
     struct stat st;
     memset(&st, 0, sizeof(st));
     st.st_ino = ino;
-    
+
     size_t oldsize = b->size;
     size_t entry_size = fuse_add_direntry(req, NULL, 0, name, NULL, 0);
     char *temp = realloc(b->p, oldsize + entry_size);
@@ -530,23 +530,23 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         fuse_reply_err(req, ENOENT);
         return;
     }
-    
+
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
         fuse_reply_err(req, -path_ret);
         return;
     }
-    
+
     DIR *dp = opendir(full_path);
     if (!dp) {
         fuse_reply_err(req, errno);
         return;
     }
-    
+
     struct dir_buf b;
     memset(&b, 0, sizeof(b));
-    
+
     // Add standard directory directory markers
     if (dir_buf_add(req, &b, ".", ino) != 0 ||
         dir_buf_add(req, &b, "..", 1) != 0) {
@@ -555,17 +555,17 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         fuse_reply_err(req, ENOMEM);
         return;
     }
-    
+
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
             continue;
         }
-        
+
         if (de->d_type == DT_LNK) {
             continue; // Skip symbolic links entirely
         }
-        
+
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
             char subpath[PATH_MAX];
             struct stat tmp_st;
@@ -586,7 +586,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
                 }
             }
         }
-        
+
         // Construct the relative path of this entry to register or find its inode
         char entry_rel_path[PATH_MAX];
         int sn_ret;
@@ -598,7 +598,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         if (sn_ret < 0 || (size_t)sn_ret >= sizeof(entry_rel_path)) {
             continue;
         }
-        
+
         fuse_ino_t entry_ino = add_inode(entry_rel_path);
         if (entry_ino == 0) {
             continue;
@@ -608,7 +608,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         }
     }
     closedir(dp);
-    
+
     if (off < (off_t)b.size) {
         size_t chunk = b.size - off;
         if (chunk > size) {
@@ -618,7 +618,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     } else {
         fuse_reply_buf(req, NULL, 0);
     }
-    
+
     free(b.p);
 }
 
