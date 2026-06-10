@@ -74,8 +74,22 @@ static int current_open_files = 0;
 static int build_path(char *dest, size_t size, const char *rel_path) {
     int ret;
 
-    if (strstr(rel_path, "..") != NULL) {
-        return -EACCES;
+    const char *p = rel_path;
+    while (*p) {
+        while (*p == '/') {
+            p++;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        const char *end = p;
+        while (*end && *end != '/') {
+            end++;
+        }
+        if (end - p == 2 && p[0] == '.' && p[1] == '.') {
+            return -EACCES;
+        }
+        p = end;
     }
 
     if (strcmp(rel_path, "/") == 0) {
