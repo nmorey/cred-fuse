@@ -629,6 +629,15 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
+    char *abs_source_dir = realpath(global_opts.source_dir, NULL);
+    if (!abs_source_dir) {
+        perror("Failed to resolve absolute path of source_dir");
+        ret = 1;
+        goto err_early;
+    }
+    free(global_opts.source_dir);
+    global_opts.source_dir = abs_source_dir;
+
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
         ret = 1;
