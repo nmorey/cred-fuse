@@ -38,6 +38,8 @@
 #include "inode.h"
 #include "path.h"
 
+#define MAX_ALLOWED_FILE_SIZE 65536
+
 struct cred_fuse_opts global_opts;
 
 enum {
@@ -395,7 +397,7 @@ int main(int argc, char *argv[]) {
 
     memset(&global_opts, 0, sizeof(global_opts));
     global_opts.max_open_files = 1024;
-    global_opts.max_file_size = 65536;
+    global_opts.max_file_size = MAX_ALLOWED_FILE_SIZE;
 
     if (fuse_opt_parse(&args, &global_opts, cred_opts, opt_proc) == -1) {
         return 1;
@@ -435,8 +437,8 @@ int main(int argc, char *argv[]) {
     }
     global_opts.tpm_handle = (uint32_t)handle;
 
-    if (global_opts.max_file_size <= 0 || global_opts.max_file_size > 1024 * 1024 * 1024) {
-        fprintf(stderr, "Invalid max_file_size\n");
+    if (global_opts.max_file_size <= 0 || global_opts.max_file_size > MAX_ALLOWED_FILE_SIZE) {
+        fprintf(stderr, "Invalid max_file_size. Must be between 1 byte and %d bytes.\n", MAX_ALLOWED_FILE_SIZE);
         ret = 1;
         goto err_early;
     }
