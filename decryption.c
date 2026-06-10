@@ -246,7 +246,6 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     TPM2B_DATA label = { .size = 0 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
     int ret_err = 0;
-    int mlocked = 0;
 
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
@@ -313,14 +312,6 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         goto out_msg;
     }
 
-    if (!mlockall_active) {
-        if (mlock(message->buffer, message->size) != 0) {
-            ret_err = -errno;
-            goto out_msg;
-        }
-        mlocked = 1;
-    }
-
     out->buf = copy_tpm_message(message);
 
     if (out->buf == NULL) {
@@ -331,9 +322,6 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 out_msg:
     if (message) {
         OPENSSL_cleanse(message->buffer, message->size);
-        if (mlocked) {
-            munlock(message->buffer, message->size);
-        }
         Esys_Free(message);
     }
 out_session:
