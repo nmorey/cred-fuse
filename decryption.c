@@ -195,7 +195,7 @@ static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
         goto out_close;
     }
 
-    *buf = malloc(size);
+    *buf = malloc_mlock(size);
     if (!*buf) {
         err = ENOMEM;
         goto out_close;
@@ -213,7 +213,7 @@ static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
 
 out_free:
     if (err) {
-	free(*buf);
+	free_munlock(*buf, (size_t)size);
 	*buf = NULL;
     }
 out_close:
@@ -473,7 +473,7 @@ int decrypt_credential(int fd,
 
     clean_decrypted_node(&passphrase);
  read_err:
-    free(enc_data);
+    free_munlock(enc_data, enc_len);
 
     return r;
 }
