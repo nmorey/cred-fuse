@@ -78,6 +78,10 @@ int init_decryption(const char *source_dir) {
     if (gethostname(hostname, sizeof(hostname)-1) != 0) {
         return -1;
     }
+    // Validate hostname to prevent path traversal and empty names
+    if (hostname[0] == '\0' || strchr(hostname, '/') != NULL || strstr(hostname, "..") != NULL) {
+        return -1;
+    }
     dot = strchr(hostname, '.');
     if (dot)
 	*dot = '\0';
