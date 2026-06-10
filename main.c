@@ -254,16 +254,10 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
 
     fi->direct_io = 1;
 
-    int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-    if (current > global_opts.max_open_files) {
-        ret = -ENFILE;
-        goto err_open_files;
-    }
-
     s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
     if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
         ret = -ENOENT;
-        goto err_open_files;
+        goto err_close_fd;
     }
 
     char *endptr;
@@ -273,6 +267,12 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     parsed_size = strtol(xattr_buf, &endptr, 16);
     if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
         ret = -ENOENT;
+        goto err_close_fd;
+    }
+
+    int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    if (current > global_opts.max_open_files) {
+        ret = -ENFILE;
         goto err_open_files;
     }
 
