@@ -293,10 +293,11 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 
     out->buf = copy_tpm_message(message);
 
-    if (out->buf == NULL)
-	ret_err = -errno;
-    else
-	out->len = out->allocated_size = message->size;
+    if (out->buf == NULL) {
+        ret_err = -ENOMEM;
+    } else {
+        out->len = out->allocated_size = message->size;
+    }
 out_msg:
     if (message) {
         OPENSSL_cleanse(message->buffer, message->size);
