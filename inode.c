@@ -21,7 +21,7 @@ struct inode_entry {
 static struct inode_entry inodes[MAX_INODE];
 static uint64_t inode_bitmask[BITMASK_WORDS] = {3}; // Pre-mark inode 0 and 1 as active/reserved
 static fuse_ino_t last_allocated_ino = 2; // Inode 1 is root
-static pthread_mutex_t inode_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_rwlock_t inode_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 static inline void set_inode_bit(fuse_ino_t ino) {
     inode_bitmask[ino / 64] |= (1ULL << (ino % 64));
@@ -81,58 +81,69 @@ static fuse_ino_t find_inode_unlocked(const char *rel_path) {
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path) {
     fuse_ino_t ino;
-    pthread_mutex_lock(&inode_lock);
 
-    // Check if rel_path already has an inode
+    // Fast path: Check under shared read lock
+    pthread_rwlock_rdlock(&inode_lock);
     ino = find_inode_unlocked(rel_path);
     if (ino) {
-	pthread_mutex_unlock(&inode_lock);
-	return ino;
+        pthread_rwlock_unlock(&inode_lock);
+        return ino;
+    }
+    pthread_rwlock_unlock(&inode_lock);
+
+    // Slow path: Mutate under exclusive write lock
+    pthread_rwlock_wrlock(&inode_lock);
+
+    // Double-check to avoid races between unlock and wrlock
+    ino = find_inode_unlocked(rel_path);
+    if (ino) {
+        pthread_rwlock_unlock(&inode_lock);
+        return ino;
     }
 
     // Allocate next free inode ID
     fuse_ino_t new_ino = allocate_inode_num();
     if (!new_ino) {
-        pthread_mutex_unlock(&inode_lock);
+        pthread_rwlock_unlock(&inode_lock);
         return 0; // Cache full
     }
 
     char *path_copy = strdup(rel_path);
     if (!path_copy) {
         clear_inode_bit(new_ino);
-        pthread_mutex_unlock(&inode_lock);
+        pthread_rwlock_unlock(&inode_lock);
         return 0;
     }
 
     inodes[new_ino].path = path_copy;
     inodes[new_ino].refcount = 0;
 
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
     return new_ino;
 }
 
 fuse_ino_t find_inode(const char *rel_path) {
     fuse_ino_t ino;
-    pthread_mutex_lock(&inode_lock);
+    pthread_rwlock_rdlock(&inode_lock);
     ino = find_inode_unlocked(rel_path);
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
     return ino;
 }
 
 void inode_lookup_inc(fuse_ino_t ino) {
     if (ino < 2 || ino >= MAX_INODE) return;
-    pthread_mutex_lock(&inode_lock);
+    pthread_rwlock_wrlock(&inode_lock);
     if (is_inode_active(ino)) {
         inodes[ino].refcount++;
     }
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
 }
 
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     if (ino < 2 || ino >= MAX_INODE) {
         return;
     }
-    pthread_mutex_lock(&inode_lock);
+    pthread_rwlock_wrlock(&inode_lock);
     if (is_inode_active(ino)) {
         if (inodes[ino].refcount > nlookup) {
             inodes[ino].refcount -= nlookup;
@@ -146,7 +157,7 @@ void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
             clear_inode_bit(ino);
         }
     }
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
 }
 
 char *get_inode_path(fuse_ino_t ino) {
@@ -158,19 +169,19 @@ char *get_inode_path(fuse_ino_t ino) {
         errno = ENOENT;
         return NULL;
     }
-    pthread_mutex_lock(&inode_lock);
+    pthread_rwlock_rdlock(&inode_lock);
     if (is_inode_active(ino)) {
         char *path = strdup(inodes[ino].path);
-        pthread_mutex_unlock(&inode_lock);
+        pthread_rwlock_unlock(&inode_lock);
         return path;
     }
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
     errno = ENOENT;
     return NULL;
 }
 
 void cleanup_inodes(void) {
-    pthread_mutex_lock(&inode_lock);
+    pthread_rwlock_wrlock(&inode_lock);
     for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
         if (is_inode_active(ino)) {
             free(inodes[ino].path);
@@ -182,5 +193,5 @@ void cleanup_inodes(void) {
     memset(inode_bitmask, 0, sizeof(inode_bitmask));
     inode_bitmask[0] = 3;
     last_allocated_ino = 2;
-    pthread_mutex_unlock(&inode_lock);
+    pthread_rwlock_unlock(&inode_lock);
 }
