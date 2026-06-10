@@ -41,38 +41,6 @@ static inline int is_inode_active(fuse_ino_t ino) {
     return (inode_bitmask[ino / 64] & (1ULL << (ino % 64))) != 0;
 }
 
-static fuse_ino_t allocate_inode_num(void) {
-    fuse_ino_t start_ino = last_allocated_ino + 1;
-    if (start_ino >= MAX_INODE || start_ino < 2) {
-        start_ino = 2;
-    }
-    size_t word_idx = start_ino / 64;
-    size_t bit_idx = start_ino % 64;
-
-    for (size_t i = 0; i <= BITMASK_WORDS; i++) {
-        size_t idx = (word_idx + i) % BITMASK_WORDS;
-        uint64_t val = inode_bitmask[idx];
-
-        // If it's the start word and first pass, mask out bits below bit_idx
-        if (i == 0) {
-            uint64_t mask = (1ULL << bit_idx) - 1;
-            val |= mask;
-        }
-
-        uint64_t free_bits = ~val;
-        if (free_bits) {
-            int pos = __builtin_ctzll(free_bits);
-            fuse_ino_t ino = idx * 64 + pos;
-            if (ino < MAX_INODE) {
-                set_inode_bit(ino);
-                last_allocated_ino = ino;
-                return ino;
-            }
-        }
-    }
-    return 0; // No free inodes
-}
-
 static uint32_t hash_path(const char *str) {
     uint32_t hash = 5381;
     int c;
@@ -82,16 +50,13 @@ static uint32_t hash_path(const char *str) {
     return hash % HASH_SIZE;
 }
 
-static void insert_hash(fuse_ino_t ino) {
-    uint32_t bucket = hash_path(inodes[ino].path);
-    while (path_hash_table[bucket] != 0) {
-        bucket = (bucket + 1) % HASH_SIZE;
-    }
-    path_hash_table[bucket] = (int16_t)ino;
-}
-
 static void remove_hash(fuse_ino_t ino) {
-    uint32_t bucket = hash_path(inodes[ino].path);
+    uint32_t bucket;
+
+    if (!inodes[ino].path)
+	return;
+
+    bucket = hash_path(inodes[ino].path);
     while (path_hash_table[bucket] != 0) {
         if (path_hash_table[bucket] == (int16_t)ino) {
             break;
@@ -129,6 +94,76 @@ static void remove_hash(fuse_ino_t ino) {
     }
 }
 
+static void free_inode(fuse_ino_t ino)
+{
+    remove_hash(ino);
+    if (inodes[ino].path)
+	free(inodes[ino].path);
+    inodes[ino].path = NULL;
+    inodes[ino].refcount = 0;
+    clear_inode_bit(ino);
+}
+
+/* Thread-unsafe to evict all inodes with no refcount */
+static void evict_inode()
+{
+    for(unsigned ino = 2; ino < MAX_INODE; ++ino){
+	if (!is_inode_active(ino))
+	    continue;
+	if(__atomic_load_n(&inodes[ino].refcount, __ATOMIC_SEQ_CST) <= 0)
+	    free_inode(ino);
+    }
+}
+
+static fuse_ino_t _allocate_inode_num(void) {
+    fuse_ino_t start_ino = last_allocated_ino + 1;
+    if (start_ino >= MAX_INODE || start_ino < 2) {
+        start_ino = 2;
+    }
+    size_t word_idx = start_ino / 64;
+    size_t bit_idx = start_ino % 64;
+
+    for (size_t i = 0; i <= BITMASK_WORDS; i++) {
+        size_t idx = (word_idx + i) % BITMASK_WORDS;
+        uint64_t val = inode_bitmask[idx];
+
+        // If it's the start word and first pass, mask out bits below bit_idx
+        if (i == 0) {
+            uint64_t mask = (1ULL << bit_idx) - 1;
+            val |= mask;
+        }
+
+        uint64_t free_bits = ~val;
+        if (free_bits) {
+            int pos = __builtin_ctzll(free_bits);
+            fuse_ino_t ino = idx * 64 + pos;
+            if (ino < MAX_INODE) {
+                set_inode_bit(ino);
+                last_allocated_ino = ino;
+                return ino;
+            }
+        }
+    }
+    return 0; // No free inodes
+}
+
+static fuse_ino_t allocate_inode_num(void) {
+    fuse_ino_t ino = _allocate_inode_num();
+    if(!ino) {
+	evict_inode();
+	ino = _allocate_inode_num();
+    }
+    return ino;
+}
+
+static void insert_hash(fuse_ino_t ino) {
+    uint32_t bucket = hash_path(inodes[ino].path);
+    while (path_hash_table[bucket] != 0) {
+        bucket = (bucket + 1) % HASH_SIZE;
+    }
+    path_hash_table[bucket] = (int16_t)ino;
+}
+
 static fuse_ino_t find_inode_unlocked(const char *rel_path) {
     uint32_t bucket = hash_path(rel_path);
     uint32_t start_bucket = bucket;
@@ -157,8 +192,9 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     pthread_rwlock_rdlock(&inode_lock);
     ino = find_inode_unlocked(rel_path);
     if (ino) {
-	inode_lookup_inc(ino);
-	pthread_rwlock_unlock(&inode_lock);
+        if (take_ref)
+            inode_lookup_inc(ino);
+        pthread_rwlock_unlock(&inode_lock);
         return ino;
     }
     pthread_rwlock_unlock(&inode_lock);
@@ -169,8 +205,9 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     // Double-check to avoid races between unlock and wrlock
     ino = find_inode_unlocked(rel_path);
     if (ino) {
-	inode_lookup_inc(ino);
-	pthread_rwlock_unlock(&inode_lock);
+        if (take_ref)
+            inode_lookup_inc(ino);
+        pthread_rwlock_unlock(&inode_lock);
         return ino;
     }
 
@@ -206,15 +243,6 @@ fuse_ino_t find_inode(const char *rel_path) {
     ino = find_inode_unlocked(rel_path);
     pthread_rwlock_unlock(&inode_lock);
     return ino;
-}
-
-static void free_inode(fuse_ino_t ino)
-{
-    remove_hash(ino);
-    free(inodes[ino].path);
-    inodes[ino].path = NULL;
-    inodes[ino].refcount = 0;
-    clear_inode_bit(ino);
 }
 
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {

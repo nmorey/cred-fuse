@@ -287,4 +287,36 @@ if ! cat credentials/late.enc >/dev/null; then
 fi
 echo "TEST: max_open_files: Success"
 
+# Inode eviction test under pressure
+echo "Testing inode eviction under pressure..."
+cp -a source/many source/many2
+cp -a source/many source/many3
+
+# List many multiple times (should keep refcount at 0 with our fix, no leaks/increases)
+ls credentials/many > /dev/null
+ls credentials/many > /dev/null
+
+# List many2 multiple times (should keep refcount at 0)
+ls credentials/many2 > /dev/null
+ls credentials/many2 > /dev/null
+
+# List many3 (should trigger inode eviction of many and many2 entries, and succeed)
+NUM_FILES_3=$(ls credentials/many3 | wc -l)
+if [ "$NUM_FILES_3" != "3000" ]; then
+    echo "ERROR: Failed to list many3 under inode pressure, found $NUM_FILES_3, expected 3000"
+    exit 1
+fi
+echo "TEST: inode pressure eviction (first pass): Success"
+
+# List many again (should trigger eviction of many3, and succeed)
+NUM_FILES_1=$(ls credentials/many | wc -l)
+if [ "$NUM_FILES_1" != "3000" ]; then
+    echo "ERROR: Failed to list many after eviction, found $NUM_FILES_1, expected 3000"
+    exit 1
+fi
+echo "TEST: inode pressure eviction (second pass): Success"
+
+# Cleanup pressure test directories
+rm -rf source/many2 source/many3
+
 echo "All tests passed successfully!"
