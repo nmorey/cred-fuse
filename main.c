@@ -97,13 +97,25 @@ static fuse_ino_t add_inode(const char *rel_path) {
     
     // Allocate more space if needed
     if (inodes_count >= inodes_max) {
-        inodes_max = inodes_max == 0 ? 1024 : inodes_max * 2;
-        inodes = realloc(inodes, inodes_max * sizeof(struct inode_entry));
+        size_t new_max = inodes_max == 0 ? 1024 : inodes_max * 2;
+        struct inode_entry *temp = realloc(inodes, new_max * sizeof(struct inode_entry));
+        if (!temp) {
+            pthread_mutex_unlock(&inode_lock);
+            return 0;
+        }
+        inodes = temp;
+        inodes_max = new_max;
+    }
+    
+    char *path_copy = strdup(rel_path);
+    if (!path_copy) {
+        pthread_mutex_unlock(&inode_lock);
+        return 0;
     }
     
     fuse_ino_t new_ino = (fuse_ino_t)(inodes_count + 2); // 1 is root
     inodes[inodes_count].ino = new_ino;
-    inodes[inodes_count].path = strdup(rel_path);
+    inodes[inodes_count].path = path_copy;
     inodes_count++;
     
     pthread_mutex_unlock(&inode_lock);
@@ -232,8 +244,14 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         }
     }
     
+    fuse_ino_t new_ino = add_inode(rel_path);
+    if (new_ino == 0) {
+        fuse_reply_err(req, ENOMEM);
+        return;
+    }
+    
     memset(&e, 0, sizeof(e));
-    e.ino = add_inode(rel_path);
+    e.ino = new_ino;
     e.attr_timeout = 1.0;
     e.entry_timeout = 1.0;
     e.attr = st;
@@ -441,15 +459,21 @@ struct dir_buf {
     size_t size;
 };
 
-static void dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse_ino_t ino) {
+static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse_ino_t ino) {
     struct stat st;
     memset(&st, 0, sizeof(st));
     st.st_ino = ino;
     
     size_t oldsize = b->size;
-    b->size += fuse_add_direntry(req, NULL, 0, name, NULL, 0);
-    b->p = realloc(b->p, b->size);
-    fuse_add_direntry(req, b->p + oldsize, b->size - oldsize, name, &st, b->size);
+    size_t entry_size = fuse_add_direntry(req, NULL, 0, name, NULL, 0);
+    char *temp = realloc(b->p, oldsize + entry_size);
+    if (!temp) {
+        return -1;
+    }
+    b->p = temp;
+    b->size = oldsize + entry_size;
+    fuse_add_direntry(req, b->p + oldsize, entry_size, name, &st, b->size);
+    return 0;
 }
 
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
@@ -476,8 +500,13 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     memset(&b, 0, sizeof(b));
     
     // Add standard directory directory markers
-    dir_buf_add(req, &b, ".", ino);
-    dir_buf_add(req, &b, "..", 1);
+    if (dir_buf_add(req, &b, ".", ino) != 0 ||
+        dir_buf_add(req, &b, "..", 1) != 0) {
+        free(b.p);
+        closedir(dp);
+        fuse_reply_err(req, ENOMEM);
+        return;
+    }
     
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
@@ -523,7 +552,12 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         }
         
         fuse_ino_t entry_ino = add_inode(entry_rel_path);
-        dir_buf_add(req, &b, de->d_name, entry_ino);
+        if (entry_ino == 0) {
+            continue;
+        }
+        if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0) {
+            break;
+        }
     }
     closedir(dp);
     
