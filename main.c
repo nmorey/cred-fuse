@@ -195,6 +195,22 @@ static void cleanup_inodes(void) {
     pthread_mutex_unlock(&inode_lock);
 }
 
+/* Safely join a parent path and a component name, avoiding duplicate slashes */
+static int join_paths(char *dest, size_t size, const char *parent, const char *child) {
+    int ret;
+    size_t len = strlen(parent);
+    if (len > 0 && parent[len - 1] == '/') {
+        ret = snprintf(dest, size, "%s%s", parent, child);
+    } else {
+        ret = snprintf(dest, size, "%s/%s", parent, child);
+    }
+
+    if (ret < 0 || (size_t)ret >= size) {
+        return -ENAMETOOLONG;
+    }
+    return 0;
+}
+
 /* Convert relative fuse path to absolute path in source_dir */
 static int build_path(char *dest, size_t size, const char *rel_path) {
     int ret;
@@ -314,15 +330,10 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     }
 
     char rel_path[PATH_MAX];
-    int sn_ret;
-    if (strcmp(parent_path, "/") == 0) {
-        sn_ret = snprintf(rel_path, sizeof(rel_path), "/%s", name);
-    } else {
-        sn_ret = snprintf(rel_path, sizeof(rel_path), "%s/%s", parent_path, name);
-    }
+    int path_err = join_paths(rel_path, sizeof(rel_path), parent_path, name);
     free(parent_path);
-    if (sn_ret < 0 || (size_t)sn_ret >= sizeof(rel_path)) {
-        fuse_reply_err(req, ENAMETOOLONG);
+    if (path_err < 0) {
+        fuse_reply_err(req, -path_err);
         return;
     }
 
@@ -538,8 +549,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
 
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
             char subpath[PATH_MAX];
-            int sn_ret = snprintf(subpath, sizeof(subpath), "%s/%s", full_path, de->d_name);
-            if (sn_ret < 0 || (size_t)sn_ret >= sizeof(subpath)) {
+            if (join_paths(subpath, sizeof(subpath), full_path, de->d_name) < 0) {
                 continue;
             }
             struct stat tmp_st;
@@ -552,13 +562,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
 
         // Construct the relative path of this entry to register or find its inode
         char entry_rel_path[PATH_MAX];
-        int sn_ret;
-        if (strcmp(rel_path, "/") == 0) {
-            sn_ret = snprintf(entry_rel_path, sizeof(entry_rel_path), "/%s", de->d_name);
-        } else {
-            sn_ret = snprintf(entry_rel_path, sizeof(entry_rel_path), "%s/%s", rel_path, de->d_name);
-        }
-        if (sn_ret < 0 || (size_t)sn_ret >= sizeof(entry_rel_path)) {
+        if (join_paths(entry_rel_path, sizeof(entry_rel_path), rel_path, de->d_name) < 0) {
             continue;
         }
 
