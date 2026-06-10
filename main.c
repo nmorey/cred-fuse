@@ -349,6 +349,23 @@ static int cred_release(const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
+static int validate_tcti(const char *tcti) {
+    if (!tcti) {
+        return 1;
+    }
+    const char *allowed[] = { "device", "mssim", "swtpm", "tabrmd", "none" };
+    size_t allowed_count = sizeof(allowed) / sizeof(allowed[0]);
+
+    const char *colon = strchr(tcti, ':');
+    size_t len = colon ? (size_t)(colon - tcti) : strlen(tcti);
+
+    for (size_t i = 0; i < allowed_count; i++) {
+        if (len == strlen(allowed[i]) && strncmp(tcti, allowed[i], len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static void *cred_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
     (void)conn;
@@ -426,6 +443,11 @@ int main(int argc, char *argv[]) {
 
     if (global_opts.max_open_files <= 0) {
         fprintf(stderr, "Invalid max_open_files\n");
+        return 1;
+    }
+
+    if (!validate_tcti(global_opts.tcti)) {
+        fprintf(stderr, "Invalid tcti option. Must be device, mssim, swtpm, tabrmd, none, or NULL.\n");
         return 1;
     }
 
