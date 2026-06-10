@@ -69,17 +69,25 @@ static fuse_ino_t allocate_inode_num(void) {
     }
     return 0; // No free inodes
 }
+static fuse_ino_t find_inode_unlocked(const char *rel_path) {
+    for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
+        if (is_inode_active(ino) && strcmp(inodes[ino].path, rel_path) == 0) {
+            return ino;
+        }
+    }
+    return 0;
+}
 
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path) {
+    fuse_ino_t ino;
     pthread_mutex_lock(&inode_lock);
 
     // Check if rel_path already has an inode
-    for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
-        if (is_inode_active(ino) && strcmp(inodes[ino].path, rel_path) == 0) {
-            pthread_mutex_unlock(&inode_lock);
-            return ino;
-        }
+    ino = find_inode_unlocked(rel_path);
+    if (ino) {
+	pthread_mutex_unlock(&inode_lock);
+	return ino;
     }
 
     // Allocate next free inode ID
@@ -104,15 +112,11 @@ fuse_ino_t add_inode(const char *rel_path) {
 }
 
 fuse_ino_t find_inode(const char *rel_path) {
+    fuse_ino_t ino;
     pthread_mutex_lock(&inode_lock);
-    for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
-        if (is_inode_active(ino) && strcmp(inodes[ino].path, rel_path) == 0) {
-            pthread_mutex_unlock(&inode_lock);
-            return ino;
-        }
-    }
+    ino = find_inode_unlocked(rel_path);
     pthread_mutex_unlock(&inode_lock);
-    return 0;
+    return ino;
 }
 
 void inode_lookup_inc(fuse_ino_t ino) {
