@@ -37,6 +37,7 @@ BuildRequires:  swtpm
 BuildRequires:  attr
 Requires:       fuse3
 Requires:       tpm2.0-abrmd
+Requires:       hostname
 
 %description
 cred-fuse is a FUSE filesystem that securely decrypts and exposes TPM-encrypted
