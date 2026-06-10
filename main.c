@@ -30,6 +30,7 @@
 #include <openssl/crypto.h>
 #include <sys/prctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 
 #include "decryption.h"
 
@@ -378,7 +379,16 @@ int main(int argc, char *argv[]) {
     int ret;
 
     // Disable core dumps
-    prctl(PR_SET_DUMPABLE, 0);
+    if (prctl(PR_SET_DUMPABLE, 0) != 0) {
+        perror("Failed to disable core dumps (prctl)");
+        return 1;
+    }
+
+    struct rlimit rlim = {0, 0};
+    if (setrlimit(RLIMIT_CORE, &rlim) != 0) {
+        perror("Failed to set core limit (setrlimit)");
+        return 1;
+    }
 
     memset(&global_opts, 0, sizeof(global_opts));
     global_opts.max_open_files = 1024;
