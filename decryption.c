@@ -41,21 +41,6 @@ static char cached_host_key_path[PATH_MAX] = {0};
 static uint8_t cached_host_key_enc[512] = {0};
 static size_t cached_host_key_enc_len = 0;
 
-void clean_decrypted_node(struct decrypted_node *node)
-{
-    if (!node || !node->buf)
-	return;
-
-    OPENSSL_cleanse(node->buf, node->allocated_size);
-    if (!mlockall_active) {
-        munlock(node->buf, node->allocated_size);
-    }
-    free(node->buf);
-    node->buf = NULL;
-
-    return;
-}
-
 static void *malloc_mlock(size_t size)
 {
     uint8_t *ptr = NULL;
@@ -73,6 +58,29 @@ static void *malloc_mlock(size_t size)
         }
     }
     return ptr;
+}
+
+static void free_munlock(void *ptr, size_t size)
+{
+    if (!ptr)
+	return;
+
+    OPENSSL_cleanse(ptr, size);
+    if (!mlockall_active) {
+        munlock(ptr, size);
+    }
+    free(ptr);
+}
+
+void clean_decrypted_node(struct decrypted_node *node)
+{
+    if (!node || !node->buf)
+	return;
+
+    free_munlock(node->buf, node->allocated_size);
+    node->buf = NULL;
+
+    return;
 }
 
 int init_decryption(const char *source_dir) {
@@ -411,11 +419,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 
  decrypt_final_err:
  decrypt_update_err:
-    OPENSSL_cleanse(plain, alloc_sz);
-    if (!mlockall_active) {
-        munlock(plain, alloc_sz);
-    }
-    free(plain);
+    free_munlock(plain, alloc_sz);
  decrypt_init_err:
     EVP_CIPHER_CTX_free(ctx);
     return ret_err;
