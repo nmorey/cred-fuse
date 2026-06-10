@@ -281,6 +281,7 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     return 0;
 
  err_decrypt:
+    clean_decrypted_node(node);
     free(node);
  err_open_files:
     __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
