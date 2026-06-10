@@ -15,7 +15,7 @@
 /* Thread-safe Path-to-Inode lookup table */
 struct inode_entry {
     char *path;
-    uint64_t refcount;
+    int64_t refcount;
 };
 
 static struct inode_entry inodes[MAX_INODE];
@@ -78,6 +78,10 @@ static fuse_ino_t find_inode_unlocked(const char *rel_path) {
     return 0;
 }
 
+static inline void inode_lookup_inc(fuse_ino_t ino) {
+    __atomic_add_fetch(&inodes[ino].refcount, 1, __ATOMIC_SEQ_CST);
+}
+
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path) {
     fuse_ino_t ino;
@@ -86,7 +90,8 @@ fuse_ino_t add_inode(const char *rel_path) {
     pthread_rwlock_rdlock(&inode_lock);
     ino = find_inode_unlocked(rel_path);
     if (ino) {
-        pthread_rwlock_unlock(&inode_lock);
+	inode_lookup_inc(ino);
+	pthread_rwlock_unlock(&inode_lock);
         return ino;
     }
     pthread_rwlock_unlock(&inode_lock);
@@ -97,7 +102,8 @@ fuse_ino_t add_inode(const char *rel_path) {
     // Double-check to avoid races between unlock and wrlock
     ino = find_inode_unlocked(rel_path);
     if (ino) {
-        pthread_rwlock_unlock(&inode_lock);
+	inode_lookup_inc(ino);
+	pthread_rwlock_unlock(&inode_lock);
         return ino;
     }
 
@@ -117,6 +123,7 @@ fuse_ino_t add_inode(const char *rel_path) {
 
     inodes[new_ino].path = path_copy;
     inodes[new_ino].refcount = 0;
+    inode_lookup_inc(new_ino);
 
     pthread_rwlock_unlock(&inode_lock);
     return new_ino;
@@ -130,28 +137,14 @@ fuse_ino_t find_inode(const char *rel_path) {
     return ino;
 }
 
-void inode_lookup_inc(fuse_ino_t ino) {
-    if (ino < 2 || ino >= MAX_INODE) return;
-    pthread_rwlock_wrlock(&inode_lock);
-    if (is_inode_active(ino)) {
-        inodes[ino].refcount++;
-    }
-    pthread_rwlock_unlock(&inode_lock);
-}
-
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     if (ino < 2 || ino >= MAX_INODE) {
         return;
     }
     pthread_rwlock_wrlock(&inode_lock);
     if (is_inode_active(ino)) {
-        if (inodes[ino].refcount > nlookup) {
-            inodes[ino].refcount -= nlookup;
-        } else {
-            inodes[ino].refcount = 0;
-        }
-
-        if (inodes[ino].refcount == 0) {
+        int64_t new_val = __atomic_sub_fetch(&inodes[ino].refcount, (int64_t)nlookup, __ATOMIC_SEQ_CST);
+        if (new_val <= 0) {
             free(inodes[ino].path);
             inodes[ino].path = NULL;
             clear_inode_bit(ino);

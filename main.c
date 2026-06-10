@@ -120,7 +120,6 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         fuse_reply_err(req, ENOMEM);
         return;
     }
-    inode_lookup_inc(new_ino);
 
     memset(&e, 0, sizeof(e));
     e.ino = new_ino;
