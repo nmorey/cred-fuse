@@ -412,7 +412,9 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
  decrypt_final_err:
  decrypt_update_err:
     OPENSSL_cleanse(plain, alloc_sz);
-    munlock(plain, alloc_sz);
+    if (!mlockall_active) {
+        munlock(plain, alloc_sz);
+    }
     free(plain);
  decrypt_init_err:
     EVP_CIPHER_CTX_free(ctx);
