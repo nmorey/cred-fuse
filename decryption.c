@@ -29,6 +29,7 @@
 #include <openssl/rand.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <syslog.h>
 
 #include <tss2/tss2_esys.h>
 #include <tss2/tss2_tctildr.h>
@@ -238,11 +239,14 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     TPMA_SESSION session_attrs = TPMA_SESSION_DECRYPT | TPMA_SESSION_ENCRYPT;
 
     rc = Tss2_TctiLdr_Initialize(global_opts.tcti, &tcti_ctx);
-    if (rc != TSS2_RC_SUCCESS)
+    if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Tss2_TctiLdr_Initialize failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
 	return -ENODEV;
+    }
 
     rc = Esys_Initialize(&esys_ctx, tcti_ctx, NULL);
     if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_Initialize failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         ret_err = -ENODEV;
         goto out_tcti;
     }
@@ -251,11 +255,13 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
                                &key_handle);
     if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_TR_FromTPMPublic failed for handle 0x%08x: %s (0x%x)", global_opts.tpm_handle, Tss2_RC_Decode(rc), rc);
         ret_err = -ENODEV;
         goto out_esys;
     }
 
     if (in_len == 0 || in_len > sizeof(cipher_text.buffer)) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Invalid input length %zu (max %zu)", in_len, sizeof(cipher_text.buffer));
         ret_err = -EMSGSIZE;
         goto out_key;
     }
@@ -271,12 +277,14 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                                NULL, TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
                                &session_handle);
     if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_StartAuthSession failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         ret_err = -EACCES;
         goto out_key;
     }
 
     rc = Esys_TRSess_SetAttributes(esys_ctx, session_handle, session_attrs, 0xff);
     if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_TRSess_SetAttributes failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         ret_err = -EACCES;
         goto out_session;
     }
@@ -286,6 +294,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                           &cipher_text, &inScheme, &label, &message);
 
     if (rc != TSS2_RC_SUCCESS || !message) {
+        syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_RSA_Decrypt failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         ret_err = -EACCES;
         goto out_msg;
     }
