@@ -211,8 +211,8 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     ESYS_CONTEXT *esys_ctx = NULL;
     ESYS_TR key_handle = ESYS_TR_NONE;
     ESYS_TR session_handle = ESYS_TR_NONE;
-    TPM2B_PUBLIC_KEY_RSA cipher_text;
-    TPMT_RSA_DECRYPT inScheme;
+    TPM2B_PUBLIC_KEY_RSA cipher_text = {0};
+    TPMT_RSA_DECRYPT inScheme = {0};
     TPM2B_DATA label = { .size = 0 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
     int ret_err = 0;
