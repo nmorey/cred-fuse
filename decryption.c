@@ -66,7 +66,9 @@ static void *malloc_mlock(size_t size)
     }
     if (!mlockall_active) {
         if (mlock(ptr, size) != 0) {
+            int saved_errno = errno;
             free(ptr);
+            errno = saved_errno;
             return NULL;
         }
     }
