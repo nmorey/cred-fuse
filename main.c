@@ -194,7 +194,7 @@ static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                     continue; // Skip symbolic links
                 }
                 if (S_ISREG(tmp_st.st_mode)) {
-                    char xattr_buf[64];
+                    char xattr_buf[64] = {0};
                     ssize_t s;
 
                     s = lgetxattr(subpath, "user.size", xattr_buf, sizeof(xattr_buf));
@@ -217,7 +217,7 @@ static int cred_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int cred_open(const char *path, struct fuse_file_info *fi) {
     char full_path[PATH_MAX];
-    char xattr_buf[64];
+    char xattr_buf[64] = {0};
     int r;
     ssize_t s;
     struct decrypted_node *node;
