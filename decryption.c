@@ -279,6 +279,10 @@ out_esys:
 out_tcti:
     Tss2_TctiLdr_Finalize(&tcti_ctx);
 
+    OPENSSL_cleanse(&cipher_text, sizeof(cipher_text));
+    OPENSSL_cleanse(&inScheme, sizeof(inScheme));
+    OPENSSL_cleanse(&label, sizeof(label));
+
     return ret_err;
 }
 
