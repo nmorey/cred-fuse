@@ -89,21 +89,21 @@ int init_decryption(const char *source_dir) {
     return 0;
 }
 
-/* Helper to read entire file into memory */
-static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_size) {
-    int fd = -1;
+static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
     FILE *f = NULL;
     long size;
     int err = 0;
+    int dup_fd;
 
-    fd = open(path, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0)
+    dup_fd = dup(fd);
+    if (dup_fd < 0) {
         return -errno;
+    }
 
-    f = fdopen(fd, "rb");
+    f = fdopen(dup_fd, "rb");
     if (!f) {
         err = errno;
-        close(fd);
+        close(dup_fd);
         return -err;
     }
 
@@ -152,6 +152,20 @@ out_free:
 out_close:
     fclose(f);
     return -err;
+}
+
+/* Helper to read entire file into memory */
+static int read_file(const char *path, uint8_t **buf, size_t *len, size_t max_size) {
+    int fd;
+    int ret;
+
+    fd = open(path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0)
+        return -errno;
+
+    ret = read_file_fd(fd, buf, len, max_size);
+    close(fd);
+    return ret;
 }
 
 static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
@@ -381,7 +395,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     return ret_err;
 }
 
-int decrypt_credential(const char *file_path,
+int decrypt_credential(int fd,
 		       struct decrypted_node *out) {
     uint8_t *enc_data = NULL;
     size_t enc_len = 0;
@@ -391,7 +405,7 @@ int decrypt_credential(const char *file_path,
     struct decrypted_node passphrase = { NULL, 0, 0};
     int r;
 
-    r = read_file(file_path, &enc_data, &enc_len, global_opts.max_file_size);
+    r = read_file_fd(fd, &enc_data, &enc_len, global_opts.max_file_size);
     if (r < 0)
         return r;
 

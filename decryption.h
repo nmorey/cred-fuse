@@ -37,7 +37,7 @@ int init_decryption(const char *source_dir);
  * and *out_len contains its length.
  * The caller must free *out_buf.
  */
-int decrypt_credential(const char *file_path,
+int decrypt_credential(int fd,
 		       struct decrypted_node *out);
 
 #endif /* DECRYPTION_H */

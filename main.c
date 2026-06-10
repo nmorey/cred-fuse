@@ -207,17 +207,35 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     struct decrypted_node *node;
     int ret;
     struct stat st;
+    int fd;
 
     if (build_path(full_path, sizeof(full_path), path) < 0)
         return -ENAMETOOLONG;
 
-    if (lstat(full_path, &st) == 0 && S_ISLNK(st.st_mode)) {
-        return -ELOOP;
+    // Open file once to prevent TOCTOU races
+    fd = open(full_path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        if (errno == ELOOP) {
+            return -ELOOP;
+        }
+        return -errno;
+    }
+
+    if (fstat(fd, &st) != 0) {
+        ret = -errno;
+        goto err_close_fd;
+    }
+
+    if (S_ISLNK(st.st_mode)) {
+        ret = -ELOOP;
+        goto err_close_fd;
     }
 
     // Only allow read access
-    if ((fi->flags & O_ACCMODE) != O_RDONLY)
-	return -EACCES;
+    if ((fi->flags & O_ACCMODE) != O_RDONLY) {
+        ret = -EACCES;
+        goto err_close_fd;
+    }
 
     fi->direct_io = 1;
 
@@ -227,7 +245,7 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
         goto err_open_files;
     }
 
-    s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
+    s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
     if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
         ret = -ENOENT;
         goto err_open_files;
@@ -248,7 +266,7 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     }
     memset(node, 0, sizeof(*node));
 
-    r = decrypt_credential(full_path, node);
+    r = decrypt_credential(fd, node);
     if (r < 0) {
         ret = r;
         goto err_decrypt;
@@ -259,12 +277,15 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
     }
 
     fi->fh = (uint64_t)node;
+    close(fd);
     return 0;
 
  err_decrypt:
     free(node);
  err_open_files:
     __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+ err_close_fd:
+    close(fd);
     return ret;
 }
 
