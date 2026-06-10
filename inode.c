@@ -77,7 +77,7 @@ int build_path(char *dest, size_t size, const char *rel_path) {
 
 /* Safely open, query, and validate file metadata using a secure file descriptor */
 int open_and_validate_path(const char *full_path, struct stat *st_out) {
-    int fd = open(full_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(full_path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         return -errno;
     }
@@ -104,9 +104,15 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
         return err;
     }
 
-    if (S_ISLNK(st_out->st_mode)) {
+    if (!S_ISREG(st_out->st_mode) && !S_ISDIR(st_out->st_mode)) {
         close(fd);
-        return -ELOOP;
+        return -EACCES;
+    }
+
+    // Reset O_NONBLOCK flag so that subsequent I/O behaves normally
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     }
 
     if (S_ISREG(st_out->st_mode)) {
