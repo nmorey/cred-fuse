@@ -77,6 +77,7 @@ static int current_open_files = 0;
 struct inode_entry {
     fuse_ino_t ino;
     char *path;
+    uint64_t refcount;
 };
 
 static struct inode_entry *inodes = NULL;
@@ -116,10 +117,52 @@ static fuse_ino_t add_inode(const char *rel_path) {
     fuse_ino_t new_ino = (fuse_ino_t)(inodes_count + 2); // 1 is root
     inodes[inodes_count].ino = new_ino;
     inodes[inodes_count].path = path_copy;
+    inodes[inodes_count].refcount = 0;
     inodes_count++;
     
     pthread_mutex_unlock(&inode_lock);
     return new_ino;
+}
+
+static void inode_lookup_inc(fuse_ino_t ino) {
+    if (ino == 1) return;
+    pthread_mutex_lock(&inode_lock);
+    for (size_t i = 0; i < inodes_count; i++) {
+        if (inodes[i].ino == ino) {
+            inodes[i].refcount++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&inode_lock);
+}
+
+static void cred_ll_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
+    (void)req;
+    if (ino == 1) {
+        fuse_reply_none(req);
+        return;
+    }
+    pthread_mutex_lock(&inode_lock);
+    for (size_t i = 0; i < inodes_count; i++) {
+        if (inodes[i].ino == ino) {
+            if (inodes[i].refcount > nlookup) {
+                inodes[i].refcount -= nlookup;
+            } else {
+                inodes[i].refcount = 0;
+            }
+            
+            if (inodes[i].refcount == 0) {
+                free(inodes[i].path);
+                if (i < inodes_count - 1) {
+                    inodes[i] = inodes[inodes_count - 1];
+                }
+                inodes_count--;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&inode_lock);
+    fuse_reply_none(req);
 }
 
 static const char *get_inode_path(fuse_ino_t ino) {
@@ -250,6 +293,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         fuse_reply_err(req, ENOMEM);
         return;
     }
+    inode_lookup_inc(new_ino);
     
     memset(&e, 0, sizeof(e));
     e.ino = new_ino;
@@ -701,6 +745,7 @@ int main(int argc, char *argv[]) {
         .read    = cred_ll_read,
         .readdir = cred_ll_readdir,
         .release = cred_ll_release,
+        .forget  = cred_ll_forget,
     };
 
     se = fuse_session_new(&args, &cred_ll_oper, sizeof(cred_ll_oper), NULL);
