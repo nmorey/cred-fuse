@@ -165,19 +165,21 @@ static void cred_ll_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
     fuse_reply_none(req);
 }
 
-static const char *get_inode_path(fuse_ino_t ino) {
+static char *get_inode_path(fuse_ino_t ino) {
+    errno = 0;
     if (ino == 1) {
-        return "/";
+        return strdup("/");
     }
     pthread_mutex_lock(&inode_lock);
     for (size_t i = 0; i < inodes_count; i++) {
         if (inodes[i].ino == ino) {
-            const char *path = inodes[i].path;
+            char *path = strdup(inodes[i].path);
             pthread_mutex_unlock(&inode_lock);
             return path;
         }
     }
     pthread_mutex_unlock(&inode_lock);
+    errno = ENOENT;
     return NULL;
 }
 
@@ -271,13 +273,14 @@ static int open_and_validate_path(const char *full_path, struct stat *st_out) {
 
 /* Resolve an inode to its path, open it safely, and validate metadata */
 static int open_and_validate_ino(fuse_ino_t ino, struct stat *st_out) {
-    const char *rel_path = get_inode_path(ino);
+    char *rel_path = get_inode_path(ino);
     if (!rel_path) {
-        return -ENOENT;
+        return -errno;
     }
 
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    free(rel_path);
     if (path_ret < 0) {
         return path_ret;
     }
@@ -288,9 +291,9 @@ static int open_and_validate_ino(fuse_ino_t ino, struct stat *st_out) {
 /* 1. LOOKUP: Translate a path component to an inode */
 static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
     struct fuse_entry_param e;
-    const char *parent_path = get_inode_path(parent);
+    char *parent_path = get_inode_path(parent);
     if (!parent_path) {
-        fuse_reply_err(req, ENOENT);
+        fuse_reply_err(req, errno);
         return;
     }
 
@@ -301,6 +304,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     } else {
         sn_ret = snprintf(rel_path, sizeof(rel_path), "%s/%s", parent_path, name);
     }
+    free(parent_path);
     if (sn_ret < 0 || (size_t)sn_ret >= sizeof(rel_path)) {
         fuse_reply_err(req, ENAMETOOLONG);
         return;
@@ -472,21 +476,23 @@ static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse
 
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
     (void)fi;
-    const char *rel_path = get_inode_path(ino);
+    char *rel_path = get_inode_path(ino);
     if (!rel_path) {
-        fuse_reply_err(req, ENOENT);
+        fuse_reply_err(req, errno);
         return;
     }
 
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
+        free(rel_path);
         fuse_reply_err(req, -path_ret);
         return;
     }
 
     DIR *dp = opendir(full_path);
     if (!dp) {
+        free(rel_path);
         fuse_reply_err(req, errno);
         return;
     }
@@ -499,6 +505,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         dir_buf_add(req, &b, "..", 1) != 0) {
         free(b.p);
         closedir(dp);
+        free(rel_path);
         fuse_reply_err(req, ENOMEM);
         return;
     }
@@ -560,6 +567,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     }
 
     free(b.p);
+    free(rel_path);
 }
 
 static int validate_tcti(const char *tcti) {
