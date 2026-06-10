@@ -72,14 +72,21 @@ static int current_open_files = 0;
 /* Convert relative fuse path to absolute path in source_dir */
 static int build_path(char *dest, size_t size, const char *rel_path) {
     int ret;
+
+    if (strstr(rel_path, "..") != NULL) {
+        return -EACCES;
+    }
+
     if (strcmp(rel_path, "/") == 0) {
         ret = snprintf(dest, size, "%s", global_opts.source_dir);
     } else {
         ret = snprintf(dest, size, "%s%s", global_opts.source_dir, rel_path);
     }
+
     if (ret < 0 || (size_t)ret >= size) {
         return -ENAMETOOLONG;
     }
+
     return 0;
 }
 

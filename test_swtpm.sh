@@ -41,6 +41,41 @@ tpm2_rsaencrypt -c 0x81010002 -s oaep -o source/valid.enc valid.txt -T "$TCTI_AR
 setfattr -n user.size -v c source/valid.enc # 'c' is 12 bytes
 chmod 644 source/valid.enc
 
+# AES-256-GCM test vectors
+HOSTNAME_RAW=$(hostname)
+HOSTNAME="${HOSTNAME_RAW%%.*}"
+python3 -c '
+import os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+key = os.urandom(32)
+with open("raw_host.key", "wb") as f:
+    f.write(key)
+plaintext = b"aes-gcm-secret-value"
+aesgcm = AESGCM(key)
+iv = os.urandom(12)
+encrypted = aesgcm.encrypt(iv, plaintext, None)
+tag = encrypted[-16:]
+ciphertext = encrypted[:-16]
+with open("source/gcm_test.enc", "wb") as f:
+    f.write(b"Salted__")
+    f.write(iv)
+    f.write(tag)
+    f.write(ciphertext)
+tampered_ciphertext = bytearray(ciphertext)
+if len(tampered_ciphertext) > 0:
+    tampered_ciphertext[0] ^= 1
+with open("source/gcm_tampered.enc", "wb") as f:
+    f.write(b"Salted__")
+    f.write(iv)
+    f.write(tag)
+    f.write(bytes(tampered_ciphertext))
+'
+tpm2_rsaencrypt -c 0x81010002 -s oaep -o "source/${HOSTNAME}.key" raw_host.key -T "$TCTI_ARG"
+rm -f raw_host.key
+setfattr -n user.size -v 14 source/gcm_test.enc # 20 bytes in hex is 14
+setfattr -n user.size -v 14 source/gcm_tampered.enc
+chmod 644 source/gcm_test.enc source/gcm_tampered.enc
+
 # Missing user.size
 tpm2_rsaencrypt -c 0x81010002 -s oaep -o source/missing.enc valid.txt -T "$TCTI_ARG"
 
@@ -110,6 +145,20 @@ if [ "$(cat credentials/valid.enc)" != "valid-secret" ]; then
     exit 1
 fi
 echo "TEST: Valid file: Success"
+
+# 5.1.1 AES-256-GCM Decryption
+if [ "$(cat credentials/gcm_test.enc)" != "aes-gcm-secret-value" ]; then
+    echo "ERROR: AES-256-GCM file decryption mismatched"
+    exit 1
+fi
+echo "TEST: AES-256-GCM valid decryption: Success"
+
+# 5.1.2 AES-256-GCM Integrity Check
+if cat credentials/gcm_tampered.enc 2>/dev/null; then
+    echo "ERROR: Tampered AES-256-GCM file was successfully decrypted (should have failed)"
+    exit 1
+fi
+echo "TEST: AES-256-GCM integrity failure handling: Success"
 
 # 5.2 Permissions propagation
 PERM=$(stat -c %a credentials/perms.enc)

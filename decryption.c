@@ -34,9 +34,7 @@
 #include <tss2/tss2_rc.h>
 
 #define AES_HEADER "Salted__"
-#define AES_SALT_LEN 8
 #define AES_HEADER_LEN 8
-#define PBKDF2_ITER 10000
 
 static char cached_host_key_path[PATH_MAX] = {0};
 
@@ -254,70 +252,86 @@ out_tcti:
 static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
 			  const struct decrypted_node *passphrase,
 			  struct decrypted_node *out) {
-    const uint8_t *salt;
+    const uint8_t *iv;
+    const uint8_t *tag;
     const uint8_t *ciphertext;
     size_t ciphertext_len;
-    uint8_t key_iv[32 + 16];
     EVP_CIPHER_CTX *ctx;
     uint8_t *plain;
     size_t alloc_sz;
     int len1 = 0, len2 = 0;
     int ret_err = -EIO;
 
-    if (in_len < AES_HEADER_LEN + AES_SALT_LEN)
-	return -EINVAL;
+    if (in_len < 36)
+        return -EINVAL;
 
-    salt = in_data + AES_HEADER_LEN;
-    ciphertext = in_data + AES_HEADER_LEN + AES_SALT_LEN;
-    ciphertext_len = in_len - (AES_HEADER_LEN + AES_SALT_LEN);
+    if (memcmp(in_data, AES_HEADER, AES_HEADER_LEN) != 0)
+        return -EINVAL;
 
-    if (!PKCS5_PBKDF2_HMAC((const char *)passphrase->buf, passphrase->len,
-                           salt, AES_SALT_LEN, PBKDF2_ITER,
-                           EVP_sha256(), sizeof(key_iv), key_iv)){
-        ret_err = -EACCES;
-	goto ctx_err;
+    if (!passphrase || !passphrase->buf || passphrase->len != 32) {
+        return -EINVAL;
     }
+
+    iv = in_data + 8;
+    tag = in_data + 20;
+    ciphertext = in_data + 36;
+    ciphertext_len = in_len - 36;
 
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
-        ret_err = -ENOMEM;
-	goto ctx_err;
+        return -ENOMEM;
     }
 
-    if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key_iv, key_iv + 32)) {
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
         ret_err = -EIO;
-	goto decrypt_init_err;
+        goto decrypt_init_err;
     }
 
-    if (ciphertext_len > INT_MAX - EVP_MAX_BLOCK_LENGTH) {
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, NULL) != 1) {
+        ret_err = -EIO;
+        goto decrypt_init_err;
+    }
+
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, passphrase->buf, iv) != 1) {
+        ret_err = -EIO;
+        goto decrypt_init_err;
+    }
+
+    if (ciphertext_len > INT_MAX) {
         ret_err = -E2BIG;
         goto decrypt_init_err;
     }
 
-    alloc_sz = ciphertext_len + EVP_MAX_BLOCK_LENGTH;
+    alloc_sz = ciphertext_len > 0 ? ciphertext_len : 1;
     plain = malloc_mlock(alloc_sz);
     if (!plain) {
         ret_err = -errno;
         goto decrypt_init_err;
     }
 
-    if (!EVP_DecryptUpdate(ctx, plain, &len1, ciphertext, (int)ciphertext_len)) {
-        ret_err = -EACCES;
-	    goto decrypt_update_err;
+    if (ciphertext_len > 0) {
+        if (EVP_DecryptUpdate(ctx, plain, &len1, ciphertext, (int)ciphertext_len) != 1) {
+            ret_err = -EACCES;
+            goto decrypt_update_err;
+        }
     }
 
-    if (!EVP_DecryptFinal_ex(ctx, plain + len1, &len2)) {
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, (void *)tag) != 1) {
+        ret_err = -EIO;
+        goto decrypt_update_err;
+    }
+
+    if (EVP_DecryptFinal_ex(ctx, plain + len1, &len2) != 1) {
         ret_err = -EACCES;
-	    goto decrypt_final_err;
+        goto decrypt_final_err;
     }
 
     EVP_CIPHER_CTX_free(ctx);
 
     out->len = len1 + len2;
     out->allocated_size = alloc_sz;
-    out->buf = plain; // Returned buffer has exact plaintext
+    out->buf = plain;
 
-    OPENSSL_cleanse(key_iv, sizeof(key_iv));
     return 0;
 
  decrypt_final_err:
@@ -327,8 +341,6 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     free(plain);
  decrypt_init_err:
     EVP_CIPHER_CTX_free(ctx);
- ctx_err:
-    OPENSSL_cleanse(key_iv, sizeof(key_iv));
     return ret_err;
 }
 
@@ -346,7 +358,7 @@ int decrypt_credential(const char *file_path,
     if (r < 0)
         return r;
 
-    is_aes = (enc_len > 8 && memcmp(enc_data, AES_HEADER, 8) == 0);
+    is_aes = (enc_len >= 36 && memcmp(enc_data, AES_HEADER, 8) == 0);
 
     if (!is_aes) {
         // RSA directly
