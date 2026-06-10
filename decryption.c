@@ -338,9 +338,7 @@ out_msg:
     }
 out_session:
     if (session_handle != ESYS_TR_NONE) {
-        if (ret_err != 0) {
-            Esys_FlushContext(esys_ctx, session_handle);
-        }
+        Esys_FlushContext(esys_ctx, session_handle);
         Esys_TR_Close(esys_ctx, &session_handle);
     }
 out_key:
