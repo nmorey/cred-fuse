@@ -196,6 +196,19 @@ fuse_ino_t add_inode(const char *rel_path) {
     return new_ino;
 }
 
+fuse_ino_t find_inode(const char *rel_path) {
+    pthread_mutex_lock(&inode_lock);
+    for (size_t i = 0; i < inodes_count; i++) {
+        if (strcmp(inodes[i].path, rel_path) == 0) {
+            fuse_ino_t ino = inodes[i].ino;
+            pthread_mutex_unlock(&inode_lock);
+            return ino;
+        }
+    }
+    pthread_mutex_unlock(&inode_lock);
+    return 0;
+}
+
 void inode_lookup_inc(fuse_ino_t ino) {
     if (ino == 1) return;
     pthread_mutex_lock(&inode_lock);

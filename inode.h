@@ -20,6 +20,7 @@ int open_and_validate_ino(fuse_ino_t ino, struct stat *st_out);
 
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path);
+fuse_ino_t find_inode(const char *rel_path);
 void inode_lookup_inc(fuse_ino_t ino);
 void inode_forget(fuse_ino_t ino, uint64_t nlookup);
 char *get_inode_path(fuse_ino_t ino);

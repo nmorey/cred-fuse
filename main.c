@@ -333,10 +333,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             continue;
         }
 
-        fuse_ino_t entry_ino = add_inode(entry_rel_path);
-        if (entry_ino == 0) {
-            continue;
-        }
+        fuse_ino_t entry_ino = find_inode(entry_rel_path);
         if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0) {
             break;
         }
