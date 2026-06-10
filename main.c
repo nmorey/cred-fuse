@@ -116,15 +116,16 @@ static int cred_getattr(const char *path, struct stat *stbuf,
 
         s = lgetxattr(full_path, "user.size", xattr_buf, sizeof(xattr_buf));
         if (s > 0 && s < (ssize_t)sizeof(xattr_buf)) {
+            char *endptr;
             long parsed_size;
 
             xattr_buf[s] = '\0';
-            parsed_size = strtol(xattr_buf, NULL, 16);
-            if (parsed_size >= 0) {
-                stbuf->st_size = parsed_size;
-            } else {
+            errno = 0;
+            parsed_size = strtol(xattr_buf, &endptr, 16);
+            if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
                 return -ENOENT;
             }
+            stbuf->st_size = parsed_size;
         } else {
             return -ENOENT;
         }
@@ -251,10 +252,12 @@ static int cred_open(const char *path, struct fuse_file_info *fi) {
         goto err_open_files;
     }
 
+    char *endptr;
     long parsed_size;
     xattr_buf[s] = '\0';
-    parsed_size = strtol(xattr_buf, NULL, 16);
-    if (parsed_size < 0) {
+    errno = 0;
+    parsed_size = strtol(xattr_buf, &endptr, 16);
+    if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0) {
         ret = -ENOENT;
         goto err_open_files;
     }
