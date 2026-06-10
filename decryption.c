@@ -173,12 +173,20 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     TSS2_TCTI_CONTEXT *tcti_ctx = NULL;
     ESYS_CONTEXT *esys_ctx = NULL;
     ESYS_TR key_handle = ESYS_TR_NONE;
+    ESYS_TR session_handle = ESYS_TR_NONE;
     TPM2B_PUBLIC_KEY_RSA cipher_text;
     TPMT_RSA_DECRYPT inScheme;
     TPM2B_DATA label = { .size = 0 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
     int ret_err = 0;
     int mlocked = 0;
+
+    TPMT_SYM_DEF symmetric = {
+        .algorithm = TPM2_ALG_AES,
+        .keyBits = { .aes = 128 },
+        .mode = { .aes = TPM2_ALG_CFB }
+    };
+    TPMA_SESSION session_attrs = TPMA_SESSION_DECRYPT | TPMA_SESSION_ENCRYPT;
 
     rc = Tss2_TctiLdr_Initialize(global_opts.tcti, &tcti_ctx);
     if (rc != TSS2_RC_SUCCESS)
@@ -209,8 +217,23 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     inScheme.scheme = TPM2_ALG_OAEP;
     inScheme.details.oaep.hashAlg = TPM2_ALG_SHA256;
 
+    rc = Esys_StartAuthSession(esys_ctx, key_handle, ESYS_TR_NONE,
+                               ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                               NULL, TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
+                               &session_handle);
+    if (rc != TSS2_RC_SUCCESS) {
+        ret_err = -EACCES;
+        goto out_key;
+    }
+
+    rc = Esys_TRSess_SetAttributes(esys_ctx, session_handle, session_attrs, 0xff);
+    if (rc != TSS2_RC_SUCCESS) {
+        ret_err = -EACCES;
+        goto out_session;
+    }
+
     rc = Esys_RSA_Decrypt(esys_ctx, key_handle,
-                          ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                          session_handle, ESYS_TR_NONE, ESYS_TR_NONE,
                           &cipher_text, &inScheme, &label, &message);
 
     if (rc != TSS2_RC_SUCCESS || !message) {
@@ -244,6 +267,10 @@ out_msg:
             munlock(message->buffer, message->size);
         }
         Esys_Free(message);
+    }
+out_session:
+    if (session_handle != ESYS_TR_NONE) {
+        Esys_TR_Close(esys_ctx, &session_handle);
     }
 out_key:
     Esys_TR_Close(esys_ctx, &key_handle);
