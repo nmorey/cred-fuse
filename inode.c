@@ -69,6 +69,7 @@ static fuse_ino_t allocate_inode_num(void) {
     }
     return 0; // No free inodes
 }
+
 static fuse_ino_t find_inode_unlocked(const char *rel_path) {
     for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
         if (is_inode_active(ino) && strcmp(inodes[ino].path, rel_path) == 0) {
@@ -137,6 +138,14 @@ fuse_ino_t find_inode(const char *rel_path) {
     return ino;
 }
 
+static void free_inode(fuse_ino_t ino)
+{
+    free(inodes[ino].path);
+    inodes[ino].path = NULL;
+    inodes[ino].refcount = 0;
+    clear_inode_bit(ino);
+}
+
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     if (ino < 2 || ino >= MAX_INODE) {
         return;
@@ -144,11 +153,8 @@ void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     pthread_rwlock_wrlock(&inode_lock);
     if (is_inode_active(ino)) {
         int64_t new_val = __atomic_sub_fetch(&inodes[ino].refcount, (int64_t)nlookup, __ATOMIC_SEQ_CST);
-        if (new_val <= 0) {
-            free(inodes[ino].path);
-            inodes[ino].path = NULL;
-            clear_inode_bit(ino);
-        }
+        if (new_val <= 0)
+	    free_inode(ino);
     }
     pthread_rwlock_unlock(&inode_lock);
 }
@@ -176,11 +182,8 @@ char *get_inode_path(fuse_ino_t ino) {
 void cleanup_inodes(void) {
     pthread_rwlock_wrlock(&inode_lock);
     for (fuse_ino_t ino = 2; ino < MAX_INODE; ino++) {
-        if (is_inode_active(ino)) {
-            free(inodes[ino].path);
-            inodes[ino].path = NULL;
-            inodes[ino].refcount = 0;
-        }
+        if (is_inode_active(ino))
+	    free_inode(ino);
     }
     // Re-mark bitmask to original state (only 0 and 1 active/reserved)
     memset(inode_bitmask, 0, sizeof(inode_bitmask));
