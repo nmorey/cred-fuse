@@ -230,6 +230,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     TPM2B_DATA label = { .size = 0 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
     int ret_err = 0;
+    int session_need_flush = 0;
 
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
@@ -281,6 +282,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         ret_err = -EACCES;
         goto out_key;
     }
+    session_need_flush = 1;
 
     rc = Esys_TRSess_SetAttributes(esys_ctx, session_handle, session_attrs, 0xff);
     if (rc != TSS2_RC_SUCCESS) {
@@ -298,6 +300,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         ret_err = -EACCES;
         goto out_msg;
     }
+    session_need_flush = 0;
 
     if (message->size == 0) {
         ret_err = -ENODATA;
@@ -318,7 +321,9 @@ out_msg:
     }
 out_session:
     if (session_handle != ESYS_TR_NONE) {
-        Esys_FlushContext(esys_ctx, session_handle);
+        if (session_need_flush) {
+            Esys_FlushContext(esys_ctx, session_handle);
+        }
         Esys_TR_Close(esys_ctx, &session_handle);
     }
 out_key:
