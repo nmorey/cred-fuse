@@ -117,7 +117,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     }
     close(fd);
 
-    fuse_ino_t new_ino = add_inode(rel_path);
+    fuse_ino_t new_ino = add_inode(rel_path, 1);
     if (new_ino == 0) {
         fuse_reply_err(req, errno);
         return;
@@ -335,10 +335,19 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             continue;
         }
 
-        fuse_ino_t entry_ino = find_inode(entry_rel_path);
-        if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0) {
+	fuse_ino_t entry_ino;
+	switch(de->d_type){
+	case DT_REG:
+	case DT_UNKNOWN:
+	case DT_DIR:
+	    entry_ino = add_inode(entry_rel_path, 0);
+	    break;
+	default:
+	    entry_ino = find_inode(entry_rel_path);
             break;
         }
+        if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0)
+	    break;
     }
     closedir(dp);
 

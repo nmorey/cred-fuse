@@ -150,7 +150,7 @@ static inline void inode_lookup_inc(fuse_ino_t ino) {
 }
 
 /* Thread-safe Path-to-Inode lookup table operations */
-fuse_ino_t add_inode(const char *rel_path) {
+fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     fuse_ino_t ino;
 
     // Fast path: Check under shared read lock
@@ -192,7 +192,8 @@ fuse_ino_t add_inode(const char *rel_path) {
 
     inodes[new_ino].path = path_copy;
     inodes[new_ino].refcount = 0;
-    inode_lookup_inc(new_ino);
+    if (take_ref)
+	inode_lookup_inc(new_ino);
     insert_hash(new_ino);
 
     pthread_rwlock_unlock(&inode_lock);
