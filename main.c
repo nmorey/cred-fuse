@@ -594,10 +594,12 @@ static int validate_tcti(const char *tcti) {
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    struct fuse_session *se;
+    struct fuse_session *se = NULL;
     struct fuse_cmdline_opts opts;
     struct fuse_loop_config *config = NULL;
     int ret = -1;
+
+    memset(&opts, 0, sizeof(opts));
 
     // Disable core dumps
     if (prctl(PR_SET_DUMPABLE, 0) != 0) {
@@ -623,12 +625,14 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <source_dir> <mountpoint> -o tpm_handle=<hex> [options]\n", argv[0]);
         fprintf(stderr, "Missing required arguments:\n"
                         "  <source_dir>\n  -o tpm_handle=<hex>\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     char *endptr;
@@ -636,39 +640,45 @@ int main(int argc, char *argv[]) {
     unsigned long handle = strtoul(global_opts.tpm_handle_str, &endptr, 0);
     if (errno != 0 || *endptr != '\0' || handle > 0xFFFFFFFF || (handle & 0xFF000000) != 0x81000000) {
         fprintf(stderr, "Invalid tpm_handle. Must be a valid persistent TPM handle (e.g., 0x81xxxxxx).\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
     global_opts.tpm_handle = (uint32_t)handle;
 
     if (global_opts.max_file_size <= 0 || global_opts.max_file_size > 1024 * 1024 * 1024) {
         fprintf(stderr, "Invalid max_file_size\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     if (global_opts.max_open_files <= 0) {
         fprintf(stderr, "Invalid max_open_files\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     if (!validate_tcti(global_opts.tcti)) {
         fprintf(stderr, "Invalid tcti option. Must be device, mssim, swtpm, tabrmd, none, or NULL.\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     if (init_decryption(global_opts.source_dir) != 0) {
         fprintf(stderr, "Failed to initialize decryption\n");
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     /* Parse mounting options and extract mountpoint */
     if (fuse_parse_cmdline(&args, &opts) != 0) {
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     if (opts.mountpoint == NULL) {
         fprintf(stderr, "Error: No mountpoint specified.\n");
-        free(opts.mountpoint);
-        return 1;
+        ret = 1;
+        goto err_early;
     }
 
     static const struct fuse_lowlevel_ops cred_ll_oper = {
@@ -682,24 +692,18 @@ int main(int argc, char *argv[]) {
 
     se = fuse_session_new(&args, &cred_ll_oper, sizeof(cred_ll_oper), NULL);
     if (se == NULL) {
-        free(opts.mountpoint);
-        fuse_opt_free_args(&args);
-        return 1;
+        ret = 1;
+        goto err_opts;
     }
 
     if (fuse_set_signal_handlers(se) != 0) {
-        fuse_session_destroy(se);
-        free(opts.mountpoint);
-        fuse_opt_free_args(&args);
-        return 1;
+        ret = 1;
+        goto err_session;
     }
 
     if (fuse_session_mount(se, opts.mountpoint) != 0) {
-        fuse_remove_signal_handlers(se);
-        fuse_session_destroy(se);
-        free(opts.mountpoint);
-        fuse_opt_free_args(&args);
-        return 1;
+        ret = 1;
+        goto err_signal;
     }
 
     /* Handle standard daemonization background fork */
@@ -732,9 +736,13 @@ int main(int argc, char *argv[]) {
 
 err_unmount:
     fuse_session_unmount(se);
+err_signal:
     fuse_remove_signal_handlers(se);
+err_session:
     fuse_session_destroy(se);
+err_opts:
     free(opts.mountpoint);
+err_early:
     free(global_opts.source_dir);
     free(global_opts.tpm_handle_str);
     free(global_opts.tcti);
