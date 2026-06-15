@@ -207,37 +207,39 @@ static inline void inode_lookup_inc(fuse_ino_t ino) {
     __atomic_add_fetch(&inodes[ino].refcount, 1, __ATOMIC_SEQ_CST);
 }
 
+static fuse_ino_t inode_lookup_unlocked(const char *rel_path, int take_ref) {
+    fuse_ino_t slot;
+    slot = find_inode_unlocked(rel_path);
+    if (slot) {
+        if (take_ref)
+            inode_lookup_inc(slot);
+        fuse_ino_t full_ino = inodes[slot].full_ino;
+        return full_ino;
+    }
+    return 0;
+}
+
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path, int take_ref) {
-    fuse_ino_t slot;
+    fuse_ino_t full_ino;
 
     // Fast path: Check under shared read lock
     pthread_rwlock_rdlock(&inode_lock);
-    slot = find_inode_unlocked(rel_path);
-    if (slot) {
-        if (take_ref)
-            inode_lookup_inc(slot);
-        fuse_ino_t full_ino = inodes[slot].full_ino;
-        pthread_rwlock_unlock(&inode_lock);
-        return full_ino;
-    }
+    full_ino = inode_lookup_unlocked(rel_path, take_ref);
     pthread_rwlock_unlock(&inode_lock);
+    if (full_ino)
+	return full_ino;
 
     // Slow path: Mutate under exclusive write lock
     pthread_rwlock_wrlock(&inode_lock);
-
-    // Double-check to avoid races between unlock and wrlock
-    slot = find_inode_unlocked(rel_path);
-    if (slot) {
-        if (take_ref)
-            inode_lookup_inc(slot);
-        fuse_ino_t full_ino = inodes[slot].full_ino;
+    full_ino = inode_lookup_unlocked(rel_path, take_ref);
+    if (full_ino) {
         pthread_rwlock_unlock(&inode_lock);
         return full_ino;
     }
 
     // Allocate next free inode ID (returns full_ino)
-    fuse_ino_t full_ino = allocate_inode_num();
+    full_ino = allocate_inode_num();
     if (!full_ino) {
         errno = ENOSPC;
         pthread_rwlock_unlock(&inode_lock);
