@@ -242,8 +242,8 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     // Allocate next free inode ID (returns full_ino)
     full_ino = allocate_inode_num();
     if (!full_ino) {
-        errno = ENOSPC;
         pthread_rwlock_unlock(&inode_lock);
+        errno = ENOSPC;
         return 0; // Cache full
     }
 
@@ -253,8 +253,8 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     if (!path_copy) {
         clear_inode_bit(new_slot);
         inodes[new_slot].full_ino = 0;
-        errno = ENOMEM;
         pthread_rwlock_unlock(&inode_lock);
+        errno = ENOMEM;
         return 0;
     }
 
@@ -278,6 +278,7 @@ fuse_ino_t find_inode(const char *rel_path) {
         return full_ino;
     }
     pthread_rwlock_unlock(&inode_lock);
+    errno = ENOENT;
     return 0;
 }
 
