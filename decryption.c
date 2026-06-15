@@ -299,6 +299,14 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         goto out_session;
     }
 
+    /*
+     * Note: If mlockall() is not supported or fails, there is a minimal
+     * window here where the decrypted TPM message (the AES passphrase)
+     * resides in standard, unlocked heap memory. The libtss2-esys library
+     * uses a direct calloc() which we cannot easily override.
+     * We cleanse it immediately after copying, but we cannot completely
+     * prevent swapping during this specific window.
+     */
     rc = Esys_RSA_Decrypt(esys_ctx, key_handle,
                           session_handle, ESYS_TR_NONE, ESYS_TR_NONE,
                           &cipher_text, &inScheme, &label, &message);
