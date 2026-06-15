@@ -28,7 +28,7 @@ bad_tctis=(
 for tcti in "${bad_tctis[@]}"; do
     echo "Checking bad TCTI: $tcti"
     # We expect this to fail, so we invert the condition
-    if "$FUSE_EXE" -f "$WORKDIR/source" "$WORKDIR/credentials" -o tpm_handle=0x81010002,tcti="$tcti",ro >/dev/null 2>&1; then
+    if "$FUSE_EXE" -f "$WORKDIR/source" "$WORKDIR/credentials" -o tpm_handle=0x81010002,tcti="$tcti",ro,default_permissions >/dev/null 2>&1; then
         echo "ERROR: FUSE daemon started with invalid TCTI: $tcti"
         exit 1
     fi

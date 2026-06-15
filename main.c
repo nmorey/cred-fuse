@@ -44,9 +44,11 @@ struct cred_fuse_opts global_opts;
 
 enum {
     KEY_RO,
+    KEY_DEFAULT_PERMISSIONS,
 };
 
 static int is_ro = 0;
+static int has_default_permissions = 0;
 int mlockall_active = 0;
 
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
@@ -56,6 +58,7 @@ static const struct fuse_opt cred_opts[] = {
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
     FUSE_OPT_KEY("ro", KEY_RO),
+    FUSE_OPT_KEY("default_permissions", KEY_DEFAULT_PERMISSIONS),
     FUSE_OPT_END
 };
 
@@ -66,6 +69,11 @@ static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outa
     if (key == KEY_RO) {
         is_ro = 1;
         return 1; /* Keep 'ro' for FUSE mount logic */
+    }
+
+    if (key == KEY_DEFAULT_PERMISSIONS) {
+        has_default_permissions = 1;
+        return 1; /* Keep 'default_permissions' for FUSE mount logic */
     }
 
     if (key == FUSE_OPT_KEY_NONOPT && global_opts.source_dir == NULL) {
@@ -512,6 +520,12 @@ int main(int argc, char *argv[]) {
 
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
+        ret = 1;
+        goto err_early;
+    }
+
+    if (!has_default_permissions) {
+        fprintf(stderr, "Error: Must be mounted with the 'default_permissions' option.\n");
         ret = 1;
         goto err_early;
     }

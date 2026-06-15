@@ -46,7 +46,7 @@ start_fuse() {
     fi
 
     # Build the full mount options
-    FUSE_OPTS="tpm_handle=0x81010002,tcti=swtpm,ro"
+    FUSE_OPTS="tpm_handle=0x81010002,tcti=swtpm,ro,default_permissions"
     if [ -n "$EXTRA_OPTS" ]; then
         FUSE_OPTS="${FUSE_OPTS},${EXTRA_OPTS}"
     fi
