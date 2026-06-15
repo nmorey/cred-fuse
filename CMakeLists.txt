@@ -51,6 +51,7 @@ set(subtests
     test_max_file_size
     test_max_open_files
     test_inode_eviction
+    test_tcti_validation
 )
 
 foreach(subtest ${subtests})

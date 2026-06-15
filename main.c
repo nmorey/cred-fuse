@@ -383,18 +383,77 @@ static int validate_tcti(const char *tcti) {
     if (!tcti) {
         return 1;
     }
-    const char *allowed[] = { "device", "mssim", "swtpm", "tabrmd", "none" };
-    size_t allowed_count = sizeof(allowed) / sizeof(allowed[0]);
+
+    const char *allowed_schemes[] = { "device", "swtpm", "tabrmd" };
+    size_t allowed_count = sizeof(allowed_schemes) / sizeof(allowed_schemes[0]);
 
     const char *colon = strchr(tcti, ':');
-    size_t len = colon ? (size_t)(colon - tcti) : strlen(tcti);
+    size_t scheme_len = colon ? (size_t)(colon - tcti) : strlen(tcti);
 
+    // 1. Validate Scheme
+    int scheme_found = 0;
+    const char *scheme = NULL;
     for (size_t i = 0; i < allowed_count; i++) {
-        if (len == strlen(allowed[i]) && strncmp(tcti, allowed[i], len) == 0) {
-            return 1;
+        if (scheme_len == strlen(allowed_schemes[i]) && strncmp(tcti, allowed_schemes[i], scheme_len) == 0) {
+            scheme_found = 1;
+            scheme = allowed_schemes[i];
+            break;
         }
     }
-    return 0;
+    if (!scheme_found) {
+        return 0; // Unknown or forbidden scheme (e.g., mssim, none)
+    }
+
+    // If there are no options, the scheme prefix alone is valid
+    if (!colon) {
+        return 1;
+    }
+
+    const char *options = colon + 1;
+    if (*options == '\0') {
+        return 0; // Empty options trailing a colon is invalid
+    }
+
+    // 2. Validate Options based on Scheme
+    if (strcmp(scheme, "device") == 0) {
+        // Must be a safe device path: e.g. /dev/tpm0 or /dev/tpmrm0
+        if (strncmp(options, "/dev/tpm", 8) != 0) {
+            return 0;
+        }
+        for (size_t i = 8; options[i] != '\0'; i++) {
+            char c = options[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+                return 0; // Block path traversal, directories, or special chars
+            }
+        }
+    } else if (strcmp(scheme, "swtpm") == 0) {
+        // Swtpm requires path=/absolute/path/to/socket
+        if (strncmp(options, "path=", 5) != 0) {
+            return 0;
+        }
+        const char *path = options + 5;
+        if (*path != '/') {
+            return 0; // Must be absolute path
+        }
+        for (size_t i = 0; path[i] != '\0'; i++) {
+            char c = path[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || 
+                  c == '/' || c == '.' || c == '-' || c == '_')) {
+                return 0; // Block commands, wildcard shells, etc.
+            }
+        }
+    } else if (strcmp(scheme, "tabrmd") == 0) {
+        // Tabrmd allows bus_name and bus_type (alphanumeric, =, ,, -, _, .)
+        for (size_t i = 0; options[i] != '\0'; i++) {
+            char c = options[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || 
+                  c == '=' || c == ',' || c == '-' || c == '_' || c == '.')) {
+                return 0;
+            }
+        }
+    }
+
+    return 1;
 }
 
 int main(int argc, char *argv[]) {
