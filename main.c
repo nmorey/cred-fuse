@@ -158,22 +158,22 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
 
+    int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    if (current > global_opts.max_open_files) {
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        fuse_reply_err(req, ENFILE);
+        return;
+    }
+
     struct stat st;
     int fd = open_and_validate_ino(ino, &st);
     if (fd < 0) {
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
         fuse_reply_err(req, -fd);
         return;
     }
 
     fi->direct_io = 1;
-
-    int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-    if (current > global_opts.max_open_files) {
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        close(fd);
-        fuse_reply_err(req, ENFILE);
-        return;
-    }
 
     struct decrypted_node *node = malloc(sizeof(struct decrypted_node));
     if (!node) {
