@@ -12,10 +12,13 @@
 #define MAX_INODE (1U << MAX_INODE_LOG2)
 #define BITMASK_WORDS (MAX_INODE / 64)
 
+_Static_assert((64 - MAX_INODE_LOG2) >= 32, "Generation prefix bit width is too small for safety");
+
 /* Thread-safe Path-to-Inode lookup table */
 struct inode_entry {
     char *path;
     int64_t refcount;
+    fuse_ino_t full_ino;
 };
 
 #define HASH_SIZE (MAX_INODE * 2)
@@ -24,7 +27,17 @@ static struct inode_entry inodes[MAX_INODE];
 static uint64_t inode_bitmask[BITMASK_WORDS] = {3}; // Pre-mark inode 0 and 1 as active/reserved
 static int16_t path_hash_table[HASH_SIZE]; // Automatically zero-initialized (0 = empty slot)
 static fuse_ino_t last_allocated_ino = 2; // Inode 1 is root
+static fuse_ino_t current_generation = 0;
+static fuse_ino_t last_allocated_slot = 2;
 static pthread_rwlock_t inode_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+static inline fuse_ino_t ino_to_slot(fuse_ino_t ino) {
+    return ino & (MAX_INODE - 1);
+}
+
+static inline fuse_ino_t slot_to_full_ino(fuse_ino_t slot, fuse_ino_t generation) {
+    return (generation << MAX_INODE_LOG2) | slot;
+}
 
 static inline void set_inode_bit(fuse_ino_t ino) {
     inode_bitmask[ino / 64] |= (1ULL << (ino % 64));
@@ -101,6 +114,7 @@ static void free_inode(fuse_ino_t ino)
 	free(inodes[ino].path);
     inodes[ino].path = NULL;
     inodes[ino].refcount = 0;
+    inodes[ino].full_ino = 0;
     clear_inode_bit(ino);
 }
 
@@ -148,12 +162,21 @@ static fuse_ino_t _allocate_inode_num(void) {
 }
 
 static fuse_ino_t allocate_inode_num(void) {
-    fuse_ino_t ino = _allocate_inode_num();
-    if(!ino) {
+    fuse_ino_t slot = _allocate_inode_num();
+    if(!slot) {
 	evict_inode();
-	ino = _allocate_inode_num();
+	slot = _allocate_inode_num();
     }
-    return ino;
+    if (!slot) {
+        return 0;
+    }
+    if (slot <= last_allocated_slot) {
+        current_generation++;
+    }
+    last_allocated_slot = slot;
+    fuse_ino_t full_ino = slot_to_full_ino(slot, current_generation);
+    inodes[slot].full_ino = full_ino;
+    return full_ino;
 }
 
 static void insert_hash(fuse_ino_t ino) {
@@ -186,16 +209,17 @@ static inline void inode_lookup_inc(fuse_ino_t ino) {
 
 /* Thread-safe Path-to-Inode lookup table operations */
 fuse_ino_t add_inode(const char *rel_path, int take_ref) {
-    fuse_ino_t ino;
+    fuse_ino_t slot;
 
     // Fast path: Check under shared read lock
     pthread_rwlock_rdlock(&inode_lock);
-    ino = find_inode_unlocked(rel_path);
-    if (ino) {
+    slot = find_inode_unlocked(rel_path);
+    if (slot) {
         if (take_ref)
-            inode_lookup_inc(ino);
+            inode_lookup_inc(slot);
+        fuse_ino_t full_ino = inodes[slot].full_ino;
         pthread_rwlock_unlock(&inode_lock);
-        return ino;
+        return full_ino;
     }
     pthread_rwlock_unlock(&inode_lock);
 
@@ -203,57 +227,67 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
     pthread_rwlock_wrlock(&inode_lock);
 
     // Double-check to avoid races between unlock and wrlock
-    ino = find_inode_unlocked(rel_path);
-    if (ino) {
+    slot = find_inode_unlocked(rel_path);
+    if (slot) {
         if (take_ref)
-            inode_lookup_inc(ino);
+            inode_lookup_inc(slot);
+        fuse_ino_t full_ino = inodes[slot].full_ino;
         pthread_rwlock_unlock(&inode_lock);
-        return ino;
+        return full_ino;
     }
 
-    // Allocate next free inode ID
-    fuse_ino_t new_ino = allocate_inode_num();
-    if (!new_ino) {
+    // Allocate next free inode ID (returns full_ino)
+    fuse_ino_t full_ino = allocate_inode_num();
+    if (!full_ino) {
         errno = ENOSPC;
         pthread_rwlock_unlock(&inode_lock);
         return 0; // Cache full
     }
 
+    fuse_ino_t new_slot = ino_to_slot(full_ino);
+
     char *path_copy = strdup(rel_path);
     if (!path_copy) {
-        clear_inode_bit(new_ino);
+        clear_inode_bit(new_slot);
+        inodes[new_slot].full_ino = 0;
         errno = ENOMEM;
         pthread_rwlock_unlock(&inode_lock);
         return 0;
     }
 
-    inodes[new_ino].path = path_copy;
-    inodes[new_ino].refcount = 0;
+    inodes[new_slot].path = path_copy;
+    inodes[new_slot].refcount = 0;
     if (take_ref)
-	inode_lookup_inc(new_ino);
-    insert_hash(new_ino);
+	inode_lookup_inc(new_slot);
+    insert_hash(new_slot);
 
     pthread_rwlock_unlock(&inode_lock);
-    return new_ino;
+    return full_ino;
 }
 
 fuse_ino_t find_inode(const char *rel_path) {
-    fuse_ino_t ino;
+    fuse_ino_t slot;
     pthread_rwlock_rdlock(&inode_lock);
-    ino = find_inode_unlocked(rel_path);
+    slot = find_inode_unlocked(rel_path);
+    if (slot) {
+        fuse_ino_t full_ino = inodes[slot].full_ino;
+        pthread_rwlock_unlock(&inode_lock);
+        return full_ino;
+    }
     pthread_rwlock_unlock(&inode_lock);
-    return ino;
+    return 0;
 }
 
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
-    if (ino < 2 || ino >= MAX_INODE) {
+    fuse_ino_t slot = ino_to_slot(ino);
+    if (slot < 2) {
         return;
     }
     pthread_rwlock_wrlock(&inode_lock);
-    if (is_inode_active(ino)) {
-        int64_t new_val = __atomic_sub_fetch(&inodes[ino].refcount, (int64_t)nlookup, __ATOMIC_SEQ_CST);
+    if (is_inode_active(slot) && inodes[slot].full_ino == ino) {
+        int64_t new_val = __atomic_sub_fetch(&inodes[slot].refcount, (int64_t)nlookup, __ATOMIC_SEQ_CST);
         if (new_val <= 0)
-	    free_inode(ino);
+	    free_inode(slot);
     }
     pthread_rwlock_unlock(&inode_lock);
 }
@@ -263,13 +297,14 @@ char *get_inode_path(fuse_ino_t ino) {
     if (ino == 1) {
         return strdup("/");
     }
-    if (ino < 2 || ino >= MAX_INODE) {
+    fuse_ino_t slot = ino_to_slot(ino);
+    if (slot < 2) {
         errno = ENOENT;
         return NULL;
     }
     pthread_rwlock_rdlock(&inode_lock);
-    if (is_inode_active(ino)) {
-        char *path = strdup(inodes[ino].path);
+    if (is_inode_active(slot) && inodes[slot].full_ino == ino) {
+        char *path = strdup(inodes[slot].path);
         pthread_rwlock_unlock(&inode_lock);
         return path;
     }
@@ -290,5 +325,7 @@ void cleanup_inodes(void) {
     // Clear hash table completely
     memset(path_hash_table, 0, sizeof(path_hash_table));
     last_allocated_ino = 2;
+    current_generation = 0;
+    last_allocated_slot = 2;
     pthread_rwlock_unlock(&inode_lock);
 }
