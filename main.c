@@ -194,8 +194,13 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
 
-    if (node->len > (size_t)st.st_size) {
-        node->len = (size_t)st.st_size;
+    if (node->len != (size_t)st.st_size) {
+        clean_decrypted_node(node);
+        free(node);
+        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        close(fd);
+        fuse_reply_err(req, EBADMSG);
+        return;
     }
 
     fi->fh = (uint64_t)node;

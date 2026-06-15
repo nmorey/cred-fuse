@@ -35,22 +35,22 @@ rm -f "${WORKDIR}/valid.txt"
 start_fuse "${FUSE_EXE}"
 
 echo "Testing user.size (zero)..."
-if [ "$(cat "${WORKDIR}/credentials/zero.enc")" != "" ]; then
-    echo "ERROR: Zero size mismatch"
+if cat "${WORKDIR}/credentials/zero.enc" 2>/dev/null; then
+    echo "ERROR: Zero size mismatch did not fail open"
     exit 1
 fi
 echo "TEST: user.size (zero): Success"
 
 echo "Testing user.size (shorter)..."
-if [ "$(cat "${WORKDIR}/credentials/short.enc" | wc -c)" != "2" ]; then
-    echo "ERROR: Short boundary mismatch"
+if cat "${WORKDIR}/credentials/short.enc" 2>/dev/null; then
+    echo "ERROR: Short boundary mismatch did not fail open"
     exit 1
 fi
 echo "TEST: user.size (shorter): Success"
 
 echo "Testing user.size (longer)..."
-if [ "$(cat "${WORKDIR}/credentials/long.enc" | wc -c)" != "12" ]; then
-    echo "ERROR: Long boundary exceeded decrypted footprint"
+if cat "${WORKDIR}/credentials/long.enc" 2>/dev/null; then
+    echo "ERROR: Long boundary mismatch did not fail open"
     exit 1
 fi
 echo "TEST: user.size (longer): Success"
