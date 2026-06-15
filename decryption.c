@@ -61,7 +61,9 @@ static void *malloc_mlock(size_t size)
     if (!mlockall_active) {
         size_t aligned_size = get_aligned_size(size);
         size_t page_size = (size_t)system_page_size;
-        if (posix_memalign(&ptr, page_size, aligned_size) != 0) {
+        int ret = posix_memalign(&ptr, page_size, aligned_size);
+        if (ret != 0) {
+            errno = ret;
             return NULL;
         }
         if (mlock(ptr, aligned_size) != 0) {
