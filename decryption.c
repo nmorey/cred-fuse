@@ -486,8 +486,8 @@ int decrypt_credential(int fd,
 
     r = do_aes_decrypt(enc_data, enc_len, &passphrase, out);
 
-    clean_decrypted_node(&passphrase);
  read_err:
+    clean_decrypted_node(&passphrase);
     free_munlock(enc_data, enc_len);
 
     return r;
