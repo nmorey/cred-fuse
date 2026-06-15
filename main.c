@@ -152,8 +152,9 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
 
 /* 3. OPEN: Open a file safely */
 static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
-    // Only allow read access
-    if ((fi->flags & O_ACCMODE) != O_RDONLY) {
+    // Only allow read-only access and reject write/creation/truncation/append flags
+    if ((fi->flags & O_ACCMODE) != O_RDONLY || 
+        (fi->flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0) {
         fuse_reply_err(req, EACCES);
         return;
     }
