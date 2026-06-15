@@ -15,6 +15,7 @@
  */
 
 #include "decryption.h"
+#include "path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,19 +139,31 @@ int init_decryption(const char *source_dir) {
         return -1;
     }
 
-    // Open, stat, and read the encrypted host key file if it exists
-    fd = open(cached_host_key_path, O_RDONLY | O_NOFOLLOW);
+    // Open and validate the encrypted host key file using open_and_validate_path
+    struct stat st;
+    fd = open_and_validate_path(cached_host_key_path, &st);
     if (fd >= 0) {
-        struct stat st;
-        if (fstat(fd, &st) == 0) {
-            if (st.st_size > 0 && st.st_size <= (off_t)sizeof(cached_host_key_enc)) {
-                ssize_t rd = read(fd, cached_host_key_enc, st.st_size);
-                if (rd == st.st_size) {
-                    cached_host_key_enc_len = (size_t)st.st_size;
-                } else {
-                    close(fd);
-                    return -1;
+        struct stat real_st;
+        if (fstat(fd, &real_st) == 0) {
+            if (real_st.st_size > 0 && real_st.st_size <= (off_t)sizeof(cached_host_key_enc)) {
+                size_t bytes_read = 0;
+                while (bytes_read < (size_t)real_st.st_size) {
+                    ssize_t rd = pread(fd, cached_host_key_enc + bytes_read,
+                                       (size_t)real_st.st_size - bytes_read, (off_t)bytes_read);
+                    if (rd < 0) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+                        close(fd);
+                        return -1;
+                    }
+                    if (rd == 0) {
+                        close(fd);
+                        return -1;
+                    }
+                    bytes_read += (size_t)rd;
                 }
+                cached_host_key_enc_len = bytes_read;
             } else {
                 close(fd);
                 return -1;
@@ -160,7 +173,7 @@ int init_decryption(const char *source_dir) {
             return -1;
         }
         close(fd);
-    } else if (errno != ENOENT) {
+    } else if (fd != -ENOENT) {
         return -1;
     }
 

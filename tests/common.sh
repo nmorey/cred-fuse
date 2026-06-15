@@ -33,6 +33,7 @@ with open('${WORKDIR}/raw_host.key', 'wb') as f:
 "
     tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/${HOSTNAME}.key" "${WORKDIR}/raw_host.key" -T "swtpm"
     rm -f "${WORKDIR}/raw_host.key"
+    setfattr -n user.size -v 20 "${WORKDIR}/source/${HOSTNAME}.key"
 }
 
 start_fuse() {

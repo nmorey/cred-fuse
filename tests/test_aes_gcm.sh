@@ -42,6 +42,7 @@ with open('${WORKDIR}/source/gcm_tampered.enc', 'wb') as f:
 "
 tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/${HOSTNAME}.key" "${WORKDIR}/raw_host.key" -T "swtpm"
 rm -f "${WORKDIR}/raw_host.key"
+setfattr -n user.size -v 20 "${WORKDIR}/source/${HOSTNAME}.key"
 setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_test.enc" # 20 bytes in hex is 14
 setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_tampered.enc"
 chmod 644 "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_tampered.enc"
