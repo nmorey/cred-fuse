@@ -286,8 +286,17 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         return;
     }
 
-    DIR *dp = opendir(full_path);
+    struct stat st;
+    int dir_fd = open_and_validate_path(full_path, &st);
+    if (dir_fd < 0) {
+        free(rel_path);
+        fuse_reply_err(req, -dir_fd);
+        return;
+    }
+
+    DIR *dp = fdopendir(dir_fd);
     if (!dp) {
+        close(dir_fd);
         free(rel_path);
         fuse_reply_err(req, errno);
         return;
