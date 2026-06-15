@@ -38,6 +38,7 @@
 
 #define AES_HEADER "Salted__"
 #define AES_HEADER_LEN 8
+#define TPM2_RSA2048_KEY_BYTES 256
 
 static char cached_host_key_path[PATH_MAX] = {0};
 static uint8_t cached_host_key_enc[512] = {0};
@@ -243,6 +244,10 @@ static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
 
 static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 			    struct decrypted_node *out) {
+    if (in_len < TPM2_RSA2048_KEY_BYTES || in_len > sizeof(((TPM2B_PUBLIC_KEY_RSA*)0)->buffer)) {
+        return -EMSGSIZE;
+    }
+
     TSS2_RC rc;
     TSS2_TCTI_CONTEXT *tcti_ctx = NULL;
     ESYS_CONTEXT *esys_ctx = NULL;
@@ -282,12 +287,6 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
         syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_TR_FromTPMPublic failed for handle 0x%08x: %s (0x%x)", global_opts.tpm_handle, Tss2_RC_Decode(rc), rc);
         ret_err = -ENODEV;
         goto out_esys;
-    }
-
-    if (in_len == 0 || in_len > sizeof(cipher_text.buffer)) {
-        syslog(LOG_ERR, "tpm2_rsa_decrypt: Invalid input length %zu (max %zu)", in_len, sizeof(cipher_text.buffer));
-        ret_err = -EMSGSIZE;
-        goto out_key;
     }
 
     cipher_text.size = in_len;
