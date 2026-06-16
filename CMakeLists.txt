@@ -15,18 +15,23 @@ find_package(OpenSSL REQUIRED)
 # TSS2 Requirements (libtss2-esys, libtss2-rc, libtss2-tctildr)
 pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr)
 
+# libaudit for security audit logging and rules
+pkg_check_modules(LIBAUDIT REQUIRED audit)
+
 add_executable(mount.cred-fuse main.c decryption.c inode.c path.c)
 
 target_include_directories(mount.cred-fuse PRIVATE
     ${FUSE3_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${TSS2_INCLUDE_DIRS}
+    ${LIBAUDIT_INCLUDE_DIRS}
 )
 
 target_link_libraries(mount.cred-fuse PRIVATE
     ${FUSE3_LIBRARIES}
     OpenSSL::Crypto
     ${TSS2_LIBRARIES}
+    ${LIBAUDIT_LIBRARIES}
 )
 
 install(TARGETS mount.cred-fuse DESTINATION sbin)

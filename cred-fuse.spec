@@ -32,6 +32,7 @@ BuildRequires:  pkgconfig(libcrypto)
 BuildRequires:  pkgconfig(tss2-esys)
 BuildRequires:  pkgconfig(tss2-tctildr)
 BuildRequires:  hostname
+BuildRequires:  audit-devel
 # For testing
 BuildRequires:  tpm2.0-tools
 BuildRequires:  swtpm

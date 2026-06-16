@@ -33,6 +33,8 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <pthread.h>
+#include <libaudit.h>
+#include <limits.h>
 
 #include "decryption.h"
 #include "inode.h"
@@ -85,6 +87,127 @@ static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outa
 
 static int current_open_files = 0;
 
+static int audit_fd = -1;
+
+static void init_audit_system(void) {
+    audit_fd = audit_open();
+    if (audit_fd < 0) {
+        fprintf(stderr, "Warning: Failed to open kernel audit netlink socket (errno: %d)\n", errno);
+    }
+}
+
+static void shutdown_audit_system(void) {
+    if (audit_fd >= 0) {
+        audit_close(audit_fd);
+        audit_fd = -1;
+    }
+}
+
+static struct audit_rule_data *build_base_rule(const char *source_dir) {
+    struct audit_rule_data *rule = audit_rule_create_data();
+    if (!rule) {
+        return NULL;
+    }
+
+    if (audit_rule_syscallbyname_data(rule, "all") < 0) {
+        audit_rule_free_data(rule);
+        return NULL;
+    }
+
+    char arch_filter[32];
+    snprintf(arch_filter, sizeof(arch_filter), "arch=b64");
+    if (audit_rule_fieldpair_data(&rule, arch_filter, AUDIT_FILTER_EXIT) < 0) {
+        audit_rule_free_data(rule);
+        return NULL;
+    }
+
+    char dir_filter[PATH_MAX + 8];
+    snprintf(dir_filter, sizeof(dir_filter), "dir=%s", source_dir);
+    if (audit_rule_fieldpair_data(&rule, dir_filter, AUDIT_FILTER_EXIT) < 0) {
+        audit_rule_free_data(rule);
+        return NULL;
+    }
+
+    char perm_filter[32];
+    snprintf(perm_filter, sizeof(perm_filter), "perm=rwa");
+    if (audit_rule_fieldpair_data(&rule, perm_filter, AUDIT_FILTER_EXIT) < 0) {
+        audit_rule_free_data(rule);
+        return NULL;
+    }
+
+    return rule;
+}
+
+static int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add) {
+    if (audit_fd < 0) {
+        return -1;
+    }
+
+    int rc_exclude = 0;
+    int rc_watch = 0;
+
+    struct audit_rule_data *rule_exclude = build_base_rule(source_dir);
+    if (rule_exclude) {
+        char pid_filter[64];
+        snprintf(pid_filter, sizeof(pid_filter), "pid=%d", daemon_pid);
+        
+        if (audit_rule_fieldpair_data(&rule_exclude, pid_filter, AUDIT_FILTER_EXIT) == 0) {
+            if (add) {
+                rc_exclude = audit_add_rule_data(audit_fd, rule_exclude, AUDIT_FILTER_EXIT, AUDIT_NEVER);
+            } else {
+                rc_exclude = audit_delete_rule_data(audit_fd, rule_exclude, AUDIT_FILTER_EXIT, AUDIT_NEVER);
+            }
+        }
+        audit_rule_free_data(rule_exclude);
+    }
+
+    struct audit_rule_data *rule_watch = build_base_rule(source_dir);
+    if (rule_watch) {
+        char key_filter[64];
+        snprintf(key_filter, sizeof(key_filter), "key=cred-fuse-bypass");
+        if (audit_rule_fieldpair_data(&rule_watch, key_filter, AUDIT_FILTER_EXIT) == 0) {
+            if (add) {
+                rc_watch = audit_add_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
+            } else {
+                rc_watch = audit_delete_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
+            }
+        }
+        audit_rule_free_data(rule_watch);
+    }
+
+    return (rc_exclude > 0 && rc_watch > 0) ? 0 : -1;
+}
+
+static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_ino_t ino, const char *filename) {
+    if (err > 0 && audit_fd >= 0) {
+        const struct fuse_ctx *ctx = fuse_req_ctx(req);
+        char *path = NULL;
+
+        if (ino > 1) {
+            path = get_inode_path(ino);
+        }
+
+        char msg[1024];
+        snprintf(msg, sizeof(msg),
+                 "op=%s path=\"%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
+                 op,
+                 path ? path : "",
+                 (path && filename) ? "/" : "",
+                 filename ? filename : "",
+                 ctx->uid, ctx->gid, ctx->pid,
+                 strerror(err));
+
+        int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 0);
+        (void)rc;
+
+        if (path) {
+            free(path);
+        }
+    }
+
+    fuse_reply_err(req, err);
+}
+
 static void cred_ll_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
     (void)req;
     if (ino != 1) {
@@ -98,7 +221,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     struct fuse_entry_param e;
     char *parent_path = get_inode_path(parent);
     if (!parent_path) {
-        fuse_reply_err(req, errno);
+        reply_err_and_audit(req, errno, "lookup", parent, name);
         return;
     }
 
@@ -106,28 +229,28 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     int path_err = join_paths(rel_path, sizeof(rel_path), parent_path, name);
     free(parent_path);
     if (path_err < 0) {
-        fuse_reply_err(req, -path_err);
+        reply_err_and_audit(req, -path_err, "lookup", parent, name);
         return;
     }
 
     char full_path[PATH_MAX];
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
-        fuse_reply_err(req, -path_ret);
+        reply_err_and_audit(req, -path_ret, "lookup", parent, name);
         return;
     }
 
     struct stat st;
     int fd = open_and_validate_path(full_path, &st);
     if (fd < 0) {
-        fuse_reply_err(req, -fd);
+        reply_err_and_audit(req, -fd, "lookup", parent, name);
         return;
     }
     close(fd);
 
     fuse_ino_t new_ino = add_inode(rel_path, 1);
     if (new_ino == 0) {
-        fuse_reply_err(req, errno);
+        reply_err_and_audit(req, errno, "lookup", parent, name);
         return;
     }
 
@@ -148,7 +271,7 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
     struct stat st;
     int fd = open_and_validate_ino(ino, &st);
     if (fd < 0) {
-        fuse_reply_err(req, -fd);
+        reply_err_and_audit(req, -fd, "getattr", ino, NULL);
         return;
     }
     close(fd);
@@ -163,14 +286,14 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     // Only allow read-only access and reject write/creation/truncation/append flags
     if ((fi->flags & O_ACCMODE) != O_RDONLY || 
         (fi->flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0) {
-        fuse_reply_err(req, EACCES);
+        reply_err_and_audit(req, EACCES, "open", ino, NULL);
         return;
     }
 
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        fuse_reply_err(req, ENFILE);
+        reply_err_and_audit(req, ENFILE, "open", ino, NULL);
         return;
     }
 
@@ -178,7 +301,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     int fd = open_and_validate_ino(ino, &st);
     if (fd < 0) {
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        fuse_reply_err(req, -fd);
+        reply_err_and_audit(req, -fd, "open", ino, NULL);
         return;
     }
 
@@ -188,7 +311,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     if (!node) {
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
         close(fd);
-        fuse_reply_err(req, ENOMEM);
+        reply_err_and_audit(req, ENOMEM, "open", ino, NULL);
         return;
     }
     memset(node, 0, sizeof(*node));
@@ -199,7 +322,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         free(node);
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
         close(fd);
-        fuse_reply_err(req, -r);
+        reply_err_and_audit(req, -r, "open", ino, NULL);
         return;
     }
 
@@ -208,12 +331,27 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         free(node);
         __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
         close(fd);
-        fuse_reply_err(req, EBADMSG);
+        reply_err_and_audit(req, EBADMSG, "open", ino, NULL);
         return;
     }
 
     fi->fh = (uint64_t)node;
     close(fd);
+
+    if (audit_fd >= 0) {
+        const struct fuse_ctx *ctx = fuse_req_ctx(req);
+        char *path = get_inode_path(ino);
+        char msg[1024];
+        snprintf(msg, sizeof(msg),
+                 "op=open path=\"%s\" uid=%u gid=%u pid=%d res=success",
+                 path ? path : "unknown", ctx->uid, ctx->gid, ctx->pid);
+        int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 1);
+        (void)rc;
+        if (path) {
+            free(path);
+        }
+    }
+
     fuse_reply_open(req, fi);
 }
 
@@ -222,12 +360,12 @@ static void cred_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     (void)ino;
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
     if (!node || !node->buf) {
-        fuse_reply_err(req, EIO);
+        reply_err_and_audit(req, EIO, "read", ino, NULL);
         return;
     }
 
     if (off < 0) {
-        fuse_reply_err(req, EINVAL);
+        reply_err_and_audit(req, EINVAL, "read", ino, NULL);
         return;
     }
 
@@ -282,13 +420,13 @@ static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
     (void)fi;
     if (off < 0) {
-        fuse_reply_err(req, EINVAL);
+        reply_err_and_audit(req, EINVAL, "readdir", ino, NULL);
         return;
     }
 
     char *rel_path = get_inode_path(ino);
     if (!rel_path) {
-        fuse_reply_err(req, errno);
+        reply_err_and_audit(req, errno, "readdir", ino, NULL);
         return;
     }
 
@@ -296,7 +434,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     int path_ret = build_path(full_path, sizeof(full_path), rel_path);
     if (path_ret < 0) {
         free(rel_path);
-        fuse_reply_err(req, -path_ret);
+        reply_err_and_audit(req, -path_ret, "readdir", ino, NULL);
         return;
     }
 
@@ -304,7 +442,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     int dir_fd = open_and_validate_path(full_path, &st);
     if (dir_fd < 0) {
         free(rel_path);
-        fuse_reply_err(req, -dir_fd);
+        reply_err_and_audit(req, -dir_fd, "readdir", ino, NULL);
         return;
     }
 
@@ -312,7 +450,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     if (!dp) {
         close(dir_fd);
         free(rel_path);
-        fuse_reply_err(req, errno);
+        reply_err_and_audit(req, errno, "readdir", ino, NULL);
         return;
     }
 
@@ -325,7 +463,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         free(b.p);
         closedir(dp);
         free(rel_path);
-        fuse_reply_err(req, ENOMEM);
+        reply_err_and_audit(req, ENOMEM, "readdir", ino, NULL);
         return;
     }
 
@@ -605,6 +743,11 @@ int main(int argc, char *argv[]) {
     /* Handle standard daemonization background fork */
     fuse_daemonize(opts.foreground);
 
+    init_audit_system();
+    if (audit_fd >= 0) {
+        manage_audit_rules(global_opts.source_dir, getpid(), 1);
+    }
+
     // Lock all current and future memory to prevent swapping secrets (post-fork daemon context)
     if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
         mlockall_active = 1;
@@ -631,6 +774,10 @@ int main(int argc, char *argv[]) {
     }
 
 err_unmount:
+    if (audit_fd >= 0) {
+        manage_audit_rules(global_opts.source_dir, getpid(), 0);
+        shutdown_audit_system();
+    }
     fuse_session_unmount(se);
 err_signal:
     fuse_remove_signal_handlers(se);
