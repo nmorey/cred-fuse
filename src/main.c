@@ -187,10 +187,16 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
             path = get_inode_path(ino);
         }
 
+        const char *mount_prefix = global_opts.mountpoint ? global_opts.mountpoint : "";
+        if (strcmp(mount_prefix, "/") == 0) {
+            mount_prefix = "";
+        }
+
         char msg[1024];
         snprintf(msg, sizeof(msg),
-                 "op=%s path=\"%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
+                 "op=%s path=\"%s%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
                  op,
+                 mount_prefix,
                  path ? path : "",
                  (path && filename) ? "/" : "",
                  filename ? filename : "",
@@ -341,10 +347,16 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     if (audit_fd >= 0) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
         char *path = get_inode_path(ino);
+
+        const char *mount_prefix = global_opts.mountpoint ? global_opts.mountpoint : "";
+        if (strcmp(mount_prefix, "/") == 0) {
+            mount_prefix = "";
+        }
+
         char msg[1024];
         snprintf(msg, sizeof(msg),
-                 "op=open path=\"%s\" uid=%u gid=%u pid=%d res=success",
-                 path ? path : "unknown", ctx->uid, ctx->gid, ctx->pid);
+                 "op=open path=\"%s%s\" uid=%u gid=%u pid=%d res=success",
+                 mount_prefix, path ? path : "unknown", ctx->uid, ctx->gid, ctx->pid);
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 1);
         (void)rc;
         if (path) {
@@ -714,6 +726,13 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
+    global_opts.mountpoint = realpath(opts.mountpoint, NULL);
+    if (!global_opts.mountpoint) {
+        perror("Failed to resolve absolute path of mountpoint");
+        ret = 1;
+        goto err_early;
+    }
+
     static const struct fuse_lowlevel_ops cred_ll_oper = {
         .lookup  = cred_ll_lookup,
         .getattr = cred_ll_getattr,
@@ -786,6 +805,7 @@ err_session:
 err_opts:
     free(opts.mountpoint);
 err_early:
+    free(global_opts.mountpoint);
     free(global_opts.source_dir);
     free(global_opts.tpm_handle_str);
     free(global_opts.tcti);
