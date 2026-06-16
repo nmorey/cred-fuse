@@ -37,6 +37,7 @@ BuildRequires:  audit-devel
 BuildRequires:  tpm2.0-tools
 BuildRequires:  swtpm
 BuildRequires:  attr
+BuildRequires:  python3-cryptography
 Requires:       fuse3
 Requires:       tpm2.0-abrmd
 Requires:       hostname
