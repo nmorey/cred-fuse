@@ -18,7 +18,7 @@ pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr)
 # libaudit for security audit logging and rules
 pkg_check_modules(LIBAUDIT REQUIRED audit)
 
-add_executable(mount.cred-fuse main.c decryption.c inode.c path.c)
+add_executable(mount.cred-fuse src/main.c src/decryption.c src/inode.c src/path.c)
 
 target_include_directories(mount.cred-fuse PRIVATE
     ${FUSE3_INCLUDE_DIRS}
