@@ -22,7 +22,7 @@ Release:        0
 Summary:        FUSE driver for TPM-encrypted credentials
 License:        GPL-2.0-only
 Group:          System/Filesystems
-URL:            https://github.com/nmorey/homelab
+URL:            https://github.com/nmorey/cred-fuse
 Source0:        %{name}-%{version}%{?git_ver}.tar.gz
 BuildRequires:  cmake
 BuildRequires:  gcc
