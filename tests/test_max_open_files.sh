@@ -48,8 +48,20 @@ echo "TEST: max_open_files: Success"
 exec 3<&-
 exec 4<&-
 
-if ! cat "${WORKDIR}/credentials/late.enc" >/dev/null; then
-    echo "ERROR: Failed to open file after FDs were closed"
+# The VFS and FUSE daemon process 'release' asynchronously.
+# We retry opening the file for a short duration until the daemon updates its counter.
+max_retries=20
+success=0
+for ((i=0; i<max_retries; i++)); do
+    if cat "${WORKDIR}/credentials/late.enc" >/dev/null 2>&1; then
+        success=1
+        break
+    fi
+    sleep 0.1
+done
+
+if [ "$success" -ne 1 ]; then
+    echo "ERROR: Failed to open file after FDs were closed (counter not decremented?)"
     exit 1
 fi
 echo "TEST: max_open_files (after closed): Success"
