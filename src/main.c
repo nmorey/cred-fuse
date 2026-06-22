@@ -222,8 +222,26 @@ static void cred_ll_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
     fuse_reply_none(req);
 }
 
+static int is_valid_name(const char *name) {
+    if (!name || *name == '\0') {
+        return 0;
+    }
+    for (int i = 0; name[i] != '\0'; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '_' || c == '.' || c == '-')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* 1. LOOKUP: Translate a path component to an inode */
 static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
+    if (!is_valid_name(name)) {
+        reply_err_and_audit(req, ENOENT, "lookup", parent, "invalid_name");
+        return;
+    }
     struct fuse_entry_param e;
     char *parent_path = get_inode_path(parent);
     if (!parent_path) {
@@ -483,6 +501,10 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     while ((de = readdir(dp)) != NULL) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
             continue;
+        }
+
+        if (!is_valid_name(de->d_name)) {
+            continue; // Skip any entries with invalid/unsafe names
         }
 
         if (de->d_type == DT_LNK) {
