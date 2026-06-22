@@ -462,6 +462,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     free_munlock(plain, alloc_sz);
  decrypt_init_err:
     EVP_CIPHER_CTX_free(ctx);
+    ERR_clear_error();
     return ret_err;
 }
 
