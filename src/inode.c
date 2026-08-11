@@ -14,6 +14,7 @@
 #define BITMASK_WORDS (MAX_INODE / 64)
 
 _Static_assert((64 - MAX_INODE_LOG2) >= 32, "Generation prefix bit width is too small for safety");
+_Static_assert(MAX_INODE <= INT16_MAX, "hash table type too narrow for MAX_INODE");
 
 /* Thread-safe Path-to-Inode lookup table */
 struct inode_entry {
