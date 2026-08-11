@@ -726,7 +726,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (!validate_tcti(global_opts.tcti)) {
-        fprintf(stderr, "Invalid tcti option. Must be device, mssim, swtpm, tabrmd, none, or NULL.\n");
+        fprintf(stderr, "Invalid tcti option. Must be device, swtpm, tabrmd, or NULL.\n");
         ret = 1;
         goto err_early;
     }
