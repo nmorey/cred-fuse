@@ -25,6 +25,8 @@ struct inode_entry {
 
 #define HASH_SIZE (MAX_INODE * 2)
 
+_Static_assert(MAX_INODE < HASH_SIZE, "hash table must be larger than inode pool");
+
 static struct inode_entry inodes[MAX_INODE];
 static uint64_t inode_bitmask[BITMASK_WORDS] = {3}; // Pre-mark inode 0 and 1 as active/reserved
 static int16_t path_hash_table[HASH_SIZE]; // Automatically zero-initialized (0 = empty slot)
