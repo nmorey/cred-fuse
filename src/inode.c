@@ -73,6 +73,9 @@ static void remove_hash(fuse_ino_t ino) {
     if (!inodes[ino].path)
 	return;
 
+    if (ino >= MAX_INODE)
+	return;
+
     bucket = hash_path(inodes[ino].path);
     while (path_hash_table[bucket] != 0) {
         if (path_hash_table[bucket] == (int16_t)ino) {
