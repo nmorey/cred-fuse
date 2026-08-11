@@ -189,7 +189,7 @@ static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
 
     off_t size = st.st_size;
     if (size <= 0) {
-        return size == 0 ? -ENODATA : -errno;
+        return size == 0 ? -ENODATA : -EIO;
     }
 
     if ((size_t)size > max_size) {
