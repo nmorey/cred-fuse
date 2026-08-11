@@ -541,8 +541,9 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
 	    entry_ino = find_inode(entry_rel_path);
             break;
         }
-        if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0)
-	    break;
+	if (entry_ino)
+	    if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0)
+		break;
     }
     closedir(dp);
 
