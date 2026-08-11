@@ -385,7 +385,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     int len1 = 0, len2 = 0;
     int ret_err = -EIO;
 
-    if (in_len < 36)
+    if (in_len <= 36)
         return -EINVAL;
 
     if (memcmp(in_data, AES_HEADER, AES_HEADER_LEN) != 0)
