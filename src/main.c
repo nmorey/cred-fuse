@@ -386,8 +386,8 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 }
 
 /* 4. READ: Secure low-level zero-copy data reply directly from our mlocked buffer */
-static void cred_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
-    (void)ino;
+static void cred_ll_read(fuse_req_t req, fuse_ino_t ino __attribute__((unused)),
+			 size_t size, off_t off, struct fuse_file_info *fi) {
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
     if (!node || !node->buf) {
         reply_err_and_audit(req, EIO, "read", ino, NULL);
@@ -413,8 +413,8 @@ static void cred_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 }
 
 /* 5. RELEASE: Secure cleanup and resource recycling */
-static void cred_ll_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
-    (void)ino;
+static void cred_ll_release(fuse_req_t req, fuse_ino_t ino __attribute__((unused)),
+			    struct fuse_file_info *fi) {
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
     if (node) {
         clean_decrypted_node(node);
