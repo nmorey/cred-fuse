@@ -425,9 +425,12 @@ static void cred_ll_release(fuse_req_t req, fuse_ino_t ino __attribute__((unused
 }
 
 /* 6. READDIR: Formats directory entries directly */
+#define DIR_BUF_CHUNK_SIZE 16384
+
 struct dir_buf {
     char *p;
     size_t size;
+    size_t capacity;
 };
 
 static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse_ino_t ino) {
@@ -437,12 +440,24 @@ static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse
 
     size_t oldsize = b->size;
     size_t entry_size = fuse_add_direntry(req, NULL, 0, name, NULL, 0);
-    char *temp = realloc(b->p, oldsize + entry_size);
-    if (!temp) {
-        return -1;
+    size_t needed = oldsize + entry_size;
+
+    if (needed > b->capacity) {
+        if (needed > (size_t)-1 - DIR_BUF_CHUNK_SIZE) {
+            return -1; /* Overflow protection */
+        }
+        size_t chunks = (needed + DIR_BUF_CHUNK_SIZE - 1) / DIR_BUF_CHUNK_SIZE;
+        size_t new_capacity = chunks * DIR_BUF_CHUNK_SIZE;
+
+        char *temp = realloc(b->p, new_capacity);
+        if (!temp) {
+            return -1;
+        }
+        b->p = temp;
+        b->capacity = new_capacity;
     }
-    b->p = temp;
-    b->size = oldsize + entry_size;
+
+    b->size = needed;
     fuse_add_direntry(req, b->p + oldsize, entry_size, name, &st, b->size);
     return 0;
 }
