@@ -232,6 +232,9 @@ static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
         return NULL;
     }
 
+    if (message->size == 0)
+	return NULL;
+
     ptr = malloc_mlock(message->size);
     if (!ptr) {
         return NULL;
