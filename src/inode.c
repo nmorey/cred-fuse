@@ -144,6 +144,10 @@ static fuse_ino_t _allocate_inode_num(void) {
     size_t word_idx = start_ino / 64;
     size_t bit_idx = start_ino % 64;
 
+    /* We intentionally loop BITMASK_WORDS + 1 time as on the first
+     * iter, we only check the bitmask starting at work_idx. while the
+     * last iter will check the whole thing in case we missed a free spot
+     * in the first part of that word */
     for (size_t i = 0; i <= BITMASK_WORDS; i++) {
         size_t idx = (word_idx + i) % BITMASK_WORDS;
         uint64_t val = inode_bitmask[idx];
