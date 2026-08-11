@@ -359,7 +359,8 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
 
-    fi->fh = (uint64_t)node;
+    _Static_assert(sizeof(node) <= sizeof(fi->fh), "pointer must fit in fuse fh");
+    fi->fh = (typeof(fi->fh))node;
     close(fd);
 
     if (audit_fd >= 0) {
