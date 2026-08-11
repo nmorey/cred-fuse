@@ -705,7 +705,7 @@ int main(int argc, char *argv[]) {
 
     char *endptr;
     errno = 0;
-    unsigned long handle = strtoul(global_opts.tpm_handle_str, &endptr, 0);
+    unsigned long handle = strtoul(global_opts.tpm_handle_str, &endptr, 16);
     if (errno != 0 || *endptr != '\0' || handle > 0xFFFFFFFF || (handle & 0xFF000000) != 0x81000000) {
         fprintf(stderr, "Invalid tpm_handle. Must be a valid persistent TPM handle (e.g., 0x81xxxxxx).\n");
         ret = 1;
