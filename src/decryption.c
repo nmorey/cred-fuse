@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -179,6 +180,74 @@ int init_decryption(const char *source_dir) {
     }
 
     return 0;
+}
+
+int check_tpm_lockout(void) {
+    TSS2_RC rc;
+    TSS2_TCTI_CONTEXT *tcti_ctx = NULL;
+    ESYS_CONTEXT *esys_ctx = NULL;
+    int ret_err = 0;
+
+    rc = Tss2_TctiLdr_Initialize(global_opts.tcti, &tcti_ctx);
+    if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "check_tpm_lockout: Tss2_TctiLdr_Initialize failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
+        fprintf(stderr, "Failed to initialize TCTI: %s (0x%x)\n", Tss2_RC_Decode(rc), rc);
+        return -ENODEV;
+    }
+
+    rc = Esys_Initialize(&esys_ctx, tcti_ctx, NULL);
+    if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "check_tpm_lockout: Esys_Initialize failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
+        fprintf(stderr, "Failed to initialize ESYS: %s (0x%x)\n", Tss2_RC_Decode(rc), rc);
+        Tss2_TctiLdr_Finalize(&tcti_ctx);
+        return -ENODEV;
+    }
+
+    TPMI_YES_NO more_data = 0;
+    TPMS_CAPABILITY_DATA *cap_data = NULL;
+
+    rc = Esys_GetCapability(
+        esys_ctx,
+        ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+        TPM2_CAP_TPM_PROPERTIES,
+        TPM2_PT_LOCKOUT_COUNTER,
+        4,
+        &more_data,
+        &cap_data
+    );
+
+    if (rc != TSS2_RC_SUCCESS) {
+        syslog(LOG_ERR, "check_tpm_lockout: Esys_GetCapability failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
+        fprintf(stderr, "Esys_GetCapability failed: %s (0x%x)\n", Tss2_RC_Decode(rc), rc);
+        ret_err = -ENODEV;
+        goto out;
+    }
+
+    uint32_t lockout_counter = 0;
+    uint32_t max_auth_fail = 0;
+
+    if (cap_data) {
+        TPML_TAGGED_TPM_PROPERTY *props = &cap_data->data.tpmProperties;
+        for (UINT32 i = 0; i < props->count; i++) {
+            if (props->tpmProperty[i].property == TPM2_PT_LOCKOUT_COUNTER) {
+                lockout_counter = props->tpmProperty[i].value;
+            } else if (props->tpmProperty[i].property == TPM2_PT_MAX_AUTH_FAIL) {
+                max_auth_fail = props->tpmProperty[i].value;
+            }
+        }
+        Esys_Free(cap_data);
+    }
+
+    if (max_auth_fail > 0 && lockout_counter >= max_auth_fail) {
+        syslog(LOG_ERR, "check_tpm_lockout: TPM is in lockout mode (lockout_counter=%u, max_auth_fail=%u)", lockout_counter, max_auth_fail);
+        fprintf(stderr, "Error: TPM is in lockout mode (failed tries: %u, max allowed: %u). Reads will fail.\n", lockout_counter, max_auth_fail);
+        ret_err = -EKEYREJECTED;
+    }
+
+out:
+    Esys_Finalize(&esys_ctx);
+    Tss2_TctiLdr_Finalize(&tcti_ctx);
+    return ret_err;
 }
 
 static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {

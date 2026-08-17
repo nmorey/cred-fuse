@@ -33,6 +33,11 @@ void clean_decrypted_node(struct decrypted_node *node);
  */
 int init_decryption(const char *source_dir);
 
+/* Checks if the TPM is in dictionary attack lockout mode.
+ * Returns 0 if not locked out, < 0 on error or if locked out.
+ */
+int check_tpm_lockout(void);
+
 /*
  * Returns 0 on success, < 0 on error.
  * On success, *out_buf contains the allocated decrypted buffer,

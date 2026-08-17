@@ -753,6 +753,11 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
+    if (check_tpm_lockout() != 0) {
+        ret = 1;
+        goto err_early;
+    }
+
     /* Parse mounting options and extract mountpoint */
     if (fuse_parse_cmdline(&args, &opts) != 0) {
         ret = 1;
