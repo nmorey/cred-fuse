@@ -102,11 +102,13 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
 
     // Reset O_NONBLOCK flag so that subsequent I/O behaves normally
     int flags = fcntl(fd, F_GETFL);
-    if (flags >= 0) {
-        if (fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
-	    close(fd);
-	    return -errno;
-	}
+    if (flags < 0) {
+        close(fd);
+        return -errno;
+    }
+    if (fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+        close(fd);
+        return -errno;
     }
 
     if (S_ISREG(st_out->st_mode)) {
