@@ -433,7 +433,7 @@ out_session:
     }
 out_key:
     if (key_handle != ESYS_TR_NONE) {
-        Esys_FlushContext(esys_ctx, key_handle);
+        Esys_TR_Close(esys_ctx, &key_handle);
     }
 out_esys:
     Esys_Finalize(&esys_ctx);
