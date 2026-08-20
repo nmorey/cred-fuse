@@ -416,7 +416,7 @@ static void cred_ll_read(fuse_req_t req, fuse_ino_t ino __attribute__((unused)),
         return;
     }
 
-    if ((size_t)off >= node->len) {
+    if ((uint64_t)off >= (uint64_t)node->len) {
         fuse_reply_buf(req, NULL, 0);
         return;
     }
