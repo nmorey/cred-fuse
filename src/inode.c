@@ -116,6 +116,9 @@ static void remove_hash(fuse_ino_t ino) {
 
 static void free_inode(fuse_ino_t ino)
 {
+    if (ino >= MAX_INODE)
+	return;
+
     remove_hash(ino);
     if (inodes[ino].path)
 	free(inodes[ino].path);
