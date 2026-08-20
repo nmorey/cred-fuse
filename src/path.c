@@ -75,7 +75,11 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
 
     // Resolve fd's path to prevent intermediate symlink sandbox escapes
     char fd_path[64];
-    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    int r = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    if (r < 0 || (size_t)r >= sizeof(fd_path)) {
+        close(fd);
+        return -ENAMETOOLONG;
+    }
     char resolved_path[PATH_MAX];
     if (!realpath(fd_path, resolved_path)) {
         close(fd);
