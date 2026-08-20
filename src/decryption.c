@@ -75,8 +75,12 @@ static void *malloc_mlock(size_t size)
             errno = saved_errno;
             return NULL;
         }
+        memset(ptr, 0, aligned_size);
     } else {
         ptr = malloc(size);
+        if (ptr) {
+            memset(ptr, 0, size);
+        }
     }
     return ptr;
 }
