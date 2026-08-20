@@ -193,6 +193,9 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
         }
 
         char msg[1024];
+	char errno_str[256];
+
+	strerror_r(err, errno_str, sizeof(errno_str));
         snprintf(msg, sizeof(msg),
                  "op=%s path=\"%s%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
                  op,
@@ -201,7 +204,7 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
                  (path && filename) ? "/" : "",
                  filename ? filename : "",
                  ctx->uid, ctx->gid, ctx->pid,
-                 strerror(err));
+                 errno_str);
 
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 0);
         (void)rc;
