@@ -316,6 +316,10 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
 
 /* 3. OPEN: Open a file safely */
 static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+    int fd = -1;
+    struct decrypted_node *node = NULL;
+    int err_code = 0;
+
     // Only allow read-only access and reject write/creation/truncation/append flags
     if ((fi->flags & O_ACCMODE) != O_RDONLY || 
         (fi->flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0) {
@@ -325,47 +329,35 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 
     int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        reply_err_and_audit(req, ENFILE, "open", ino, NULL);
-        return;
+        err_code = ENFILE;
+        goto err_decrement;
     }
 
     struct stat st;
-    int fd = open_and_validate_ino(ino, &st);
+    fd = open_and_validate_ino(ino, &st);
     if (fd < 0) {
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        reply_err_and_audit(req, -fd, "open", ino, NULL);
-        return;
+        err_code = -fd;
+        goto err_decrement;
     }
 
     fi->direct_io = 1;
 
-    struct decrypted_node *node = malloc(sizeof(struct decrypted_node));
+    node = malloc(sizeof(struct decrypted_node));
     if (!node) {
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        close(fd);
-        reply_err_and_audit(req, ENOMEM, "open", ino, NULL);
-        return;
+        err_code = ENOMEM;
+        goto err_close;
     }
     memset(node, 0, sizeof(*node));
 
     int r = decrypt_credential(fd, node);
     if (r < 0) {
-        clean_decrypted_node(node);
-        free(node);
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        close(fd);
-        reply_err_and_audit(req, -r, "open", ino, NULL);
-        return;
+        err_code = -r;
+        goto err_free_node;
     }
 
     if (node->len != (size_t)st.st_size) {
-        clean_decrypted_node(node);
-        free(node);
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
-        close(fd);
-        reply_err_and_audit(req, EBADMSG, "open", ino, NULL);
-        return;
+        err_code = EBADMSG;
+        goto err_free_node;
     }
 
     _Static_assert(sizeof(node) <= sizeof(fi->fh), "pointer must fit in fuse fh");
@@ -398,6 +390,16 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     }
 
     fuse_reply_open(req, fi);
+    return;
+
+err_free_node:
+    clean_decrypted_node(node);
+    free(node);
+err_close:
+    close(fd);
+err_decrement:
+    __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    reply_err_and_audit(req, err_code, "open", ino, NULL);
 }
 
 /* 4. READ: Secure low-level zero-copy data reply directly from our mlocked buffer */
