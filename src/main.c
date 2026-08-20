@@ -827,7 +827,10 @@ int main(int argc, char *argv[]) {
         manage_audit_rules(global_opts.source_dir, getpid(), 1);
     }
 
-    // Lock all current and future memory to prevent swapping secrets (post-fork daemon context)
+    /* Lock all current and future memory to prevent swapping secrets (post-fork daemon context).
+     * NOTE: It is structurally safe that mlockall_active is initialized post-daemonize:
+     * No secure allocations via malloc_mlock/free_munlock are active prior to the event loop.
+     * Non-secret allocations like inode paths are freed via standard free(), never free_munlock. */
     if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
         mlockall_active = 1;
     } else {
