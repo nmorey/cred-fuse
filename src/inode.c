@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include <stdio.h>
+#include <syslog.h>
 
 #define MAX_INODE_LOG2 13
 #define MAX_INODE (1U << MAX_INODE_LOG2)
@@ -297,7 +298,7 @@ fuse_ino_t find_inode(const char *rel_path) {
 
 void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     if (nlookup > INT64_MAX) {
-        fprintf(stderr, "inode_forget: nlookup %llu exceeds INT64_MAX, ignoring\n", (unsigned long long)nlookup);
+        syslog(LOG_WARNING, "inode_forget: nlookup %llu exceeds INT64_MAX, ignoring", (unsigned long long)nlookup);
         return;
     }
     fuse_ino_t slot = ino_to_slot(ino);
@@ -308,7 +309,7 @@ void inode_forget(fuse_ino_t ino, uint64_t nlookup) {
     if (is_inode_active(slot) && inodes[slot].full_ino == ino) {
         int64_t new_val = __atomic_sub_fetch(&inodes[slot].refcount, (int64_t)nlookup, __ATOMIC_SEQ_CST);
         if (new_val < 0) {
-            fprintf(stderr, "inode_forget: refcount dropped below 0 (new_val: %lld) for slot %llu (path: %s)\n",
+            syslog(LOG_WARNING, "inode_forget: refcount dropped below 0 (new_val: %lld) for slot %llu (path: %s)",
                    (long long)new_val, (unsigned long long)slot, inodes[slot].path ? inodes[slot].path : "NULL");
         }
         if (new_val <= 0)
