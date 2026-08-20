@@ -584,7 +584,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         if (chunk > size) {
             chunk = size;
         }
-        fuse_reply_buf(req, b.p + off, chunk);
+        fuse_reply_buf(req, b.p + (size_t)off, chunk);
     } else {
         fuse_reply_buf(req, NULL, 0);
     }
