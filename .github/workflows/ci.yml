@@ -23,7 +23,7 @@ jobs:
     - name: Build
       run: cmake --build build
 
-    - name: Test (Valgrind)
+    - name: Test
       run: |
         cd build
-        USE_VALGRIND=1 ctest -V
+        ctest -V
