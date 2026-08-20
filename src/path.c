@@ -117,6 +117,11 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
             return -ENOENT;
         }
 
+        if (memchr(xattr_buf, '\0', (size_t)s) != NULL) {
+            close(fd);
+            return -ENOENT;
+        }
+
         char *endptr;
         long parsed_size;
         xattr_buf[s] = '\0';
