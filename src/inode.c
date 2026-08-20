@@ -70,10 +70,10 @@ static uint32_t hash_path(const char *str) {
 static void remove_hash(fuse_ino_t ino) {
     uint32_t bucket;
 
-    if (!inodes[ino].path)
+    if (ino >= MAX_INODE)
 	return;
 
-    if (ino >= MAX_INODE)
+    if (!inodes[ino].path)
 	return;
 
     bucket = hash_path(inodes[ino].path);
