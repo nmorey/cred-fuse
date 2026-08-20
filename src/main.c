@@ -770,14 +770,14 @@ int main(int argc, char *argv[]) {
     if (opts.mountpoint == NULL) {
         fprintf(stderr, "Error: No mountpoint specified.\n");
         ret = 1;
-        goto err_early;
+        goto err_opts;
     }
 
     global_opts.mountpoint = realpath(opts.mountpoint, NULL);
     if (!global_opts.mountpoint) {
         perror("Failed to resolve absolute path of mountpoint");
         ret = 1;
-        goto err_early;
+        goto err_opts;
     }
 
     static const struct fuse_lowlevel_ops cred_ll_oper = {
