@@ -12,7 +12,13 @@
 /* Safely join a parent path and a component name, avoiding duplicate slashes */
 int join_paths(char *dest, size_t size, const char *parent, const char *child) {
     int ret;
+
+    if (!dest || !parent || !child) {
+        return -EINVAL;
+    }
+
     size_t len = strlen(parent);
+
     if (len > 0 && parent[len - 1] == '/') {
         ret = snprintf(dest, size, "%s%s", parent, child);
     } else {
