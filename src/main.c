@@ -35,6 +35,7 @@
 #include <pthread.h>
 #include <libaudit.h>
 #include <limits.h>
+#include <syslog.h>
 
 #include "decryption.h"
 #include "inode.h"
@@ -196,7 +197,7 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
 	char errno_str[256];
 
 	strerror_r(err, errno_str, sizeof(errno_str));
-        snprintf(msg, sizeof(msg),
+        int ret = snprintf(msg, sizeof(msg),
                  "op=%s path=\"%s%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
                  op,
                  mount_prefix,
@@ -205,9 +206,14 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
                  filename ? filename : "",
                  ctx->uid, ctx->gid, ctx->pid,
                  errno_str);
+        if (ret >= (int)sizeof(msg)) {
+            syslog(LOG_WARNING, "reply_err_and_audit: audit message truncated");
+        }
 
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 0);
-        (void)rc;
+        if (rc < 0) {
+            syslog(LOG_WARNING, "reply_err_and_audit: audit_log_user_message failed: %s", strerror(errno));
+        }
 
         if (path) {
             free(path);
@@ -376,11 +382,16 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         }
 
         char msg[1024];
-        snprintf(msg, sizeof(msg),
+        int ret = snprintf(msg, sizeof(msg),
                  "op=open path=\"%s%s\" uid=%u gid=%u pid=%d res=success",
                  mount_prefix, path ? path : "unknown", ctx->uid, ctx->gid, ctx->pid);
+        if (ret >= (int)sizeof(msg)) {
+            syslog(LOG_WARNING, "cred_ll_open: audit message truncated");
+        }
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 1);
-        (void)rc;
+        if (rc < 0) {
+            syslog(LOG_WARNING, "cred_ll_open: audit_log_user_message failed: %s", strerror(errno));
+        }
         if (path) {
             free(path);
         }
