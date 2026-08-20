@@ -118,6 +118,9 @@ int init_decryption(const char *source_dir) {
     if (gethostname(hostname, sizeof(hostname)-1) != 0) {
         return -1;
     }
+    // Make sure hostname is NULL terminated
+    hostname[sizeof(hostname) - 1] = '\0';
+
     // Validate hostname to allow only alphanumeric, '.', and '-'
     if (hostname[0] == '\0') {
         return -1;
