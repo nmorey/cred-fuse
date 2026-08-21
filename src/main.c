@@ -769,9 +769,36 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
-    if (check_tpm_lockout() != 0) {
+    /*
+     * We perform an early TPM lockout check in the foreground to catch errors
+     * before mounting. However, if the tabrmd TCTI backend is used, querying
+     * the TPM initializes GLib/GDBus worker threads and D-Bus connections.
+     * These background threads and socket states do not survive fuse_daemonize()
+     * (fork), leading to stale connections and 25s D-Bus timeouts in the daemon.
+     *
+     * To prevent D-Bus state corruption across fork(), we re-exec the binary
+     * with _CREDFUSE_LOCKOUT_CHECKED set upon a successful check. The execv()
+     * completely flushes the process memory space and GLib/D-Bus state, ensuring
+     * a clean slate before fuse_daemonize() forks.
+     */
+    if (!getenv("_CREDFUSE_LOCKOUT_CHECKED")) {
+        if (check_tpm_lockout() != 0) {
+            ret = 1;
+            goto err_early;
+        }
+
+        if (setenv("_CREDFUSE_LOCKOUT_CHECKED", "1", 1) != 0) {
+            perror("setenv failed");
+            ret = 1;
+            goto err_early;
+        }
+
+        execv("/proc/self/exe", argv);
+        perror("execv failed");
         ret = 1;
         goto err_early;
+    } else {
+        unsetenv("_CREDFUSE_LOCKOUT_CHECKED");
     }
 
     /* Parse mounting options and extract mountpoint */
