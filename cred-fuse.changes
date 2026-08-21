@@ -1,4 +1,13 @@
 -------------------------------------------------------------------
+Fri Aug 21 07:51:37 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
+
+- Release 1.0
+  - Replace AES-CBC with AES-256-GCM
+  - Many, many, many security and stability fixes
+  - Performance enhancements (path lookups, concurrent inode handling)
+  - Support for auditd
+
+-------------------------------------------------------------------
 Wed Apr  1 10:00:00 UTC 2026 - nmorey@example.com
 
 - Initial version 0.1.0
