@@ -47,6 +47,16 @@ setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_test.enc" # 20 bytes in hex i
 setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_tampered.enc"
 chmod 644 "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_tampered.enc"
 
+echo "Testing rejection of overly permissive host key (0644)..."
+chmod 644 "${WORKDIR}/source/${HOSTNAME}.key"
+if "${FUSE_EXE}" -f "${WORKDIR}/source" "${WORKDIR}/credentials" -o "tpm_handle=0x81010002,tcti=swtpm,ro,default_permissions" 2>/dev/null; then
+    echo "ERROR: FUSE mounted despite overly permissive host key"
+    exit 1
+fi
+echo "TEST: Rejection of overly permissive host key: Success"
+
+chmod 600 "${WORKDIR}/source/${HOSTNAME}.key"
+
 # Start standard FUSE mount
 start_fuse "${FUSE_EXE}"
 

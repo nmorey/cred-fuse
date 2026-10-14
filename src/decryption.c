@@ -154,6 +154,15 @@ int init_decryption(const char *source_dir) {
     if (fd >= 0) {
         struct stat real_st;
         if (fstat(fd, &real_st) == 0) {
+            if ((real_st.st_uid != 0 && real_st.st_uid != geteuid()) ||
+                (real_st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+                syslog(LOG_ERR, "init_decryption: Host key %s has insecure ownership or permissions (uid=%u, mode=%04o)",
+                       cached_host_key_path, real_st.st_uid, (unsigned int)(real_st.st_mode & 07777));
+                fprintf(stderr, "Error: Host key %s must be owned by root and not accessible by group or others.\n",
+                        cached_host_key_path);
+                close(fd);
+                return -1;
+            }
             if (real_st.st_size > 0 && real_st.st_size <= (off_t)sizeof(cached_host_key_enc)) {
                 size_t bytes_read = 0;
                 while (bytes_read < (size_t)real_st.st_size) {
