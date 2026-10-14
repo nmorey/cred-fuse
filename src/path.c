@@ -99,6 +99,11 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
         return err;
     }
 
+    if (is_host_key_inode(st_out->st_dev, st_out->st_ino)) {
+        close(fd);
+        return -ENOENT;
+    }
+
     if (!S_ISREG(st_out->st_mode) && !S_ISDIR(st_out->st_mode)) {
         close(fd);
         return -EACCES;

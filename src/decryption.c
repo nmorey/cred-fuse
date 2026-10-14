@@ -41,9 +41,15 @@
 #define AES_HEADER_LEN 8
 #define TPM2_RSA2048_KEY_BYTES 256
 
-static char cached_host_key_path[PATH_MAX] = {0};
-static uint8_t cached_host_key_enc[512] = {0};
-static size_t cached_host_key_enc_len = 0;
+struct cached_host_key {
+    char path[PATH_MAX];
+    dev_t dev;
+    ino_t ino;
+    uint8_t enc[512];
+    size_t enc_len;
+};
+
+static struct cached_host_key host_key = {0};
 
 static long system_page_size = 4096;
 
@@ -107,12 +113,20 @@ void clean_decrypted_node(struct decrypted_node *node)
     memset(node, 0, sizeof(*node));
 }
 
+int is_host_key_inode(dev_t dev, ino_t ino) {
+    return host_key.ino != 0 &&
+           host_key.ino == ino &&
+           host_key.dev == dev;
+}
+
 int init_decryption(const char *source_dir) {
     char hostname[256] = {0};
     char *dot;
     int ret;
     int fd;
     long p_sz;
+
+    memset(&host_key, 0, sizeof(host_key));
 
     p_sz = sysconf(_SC_PAGESIZE);
     if (p_sz > 0) {
@@ -143,30 +157,30 @@ int init_decryption(const char *source_dir) {
         return -1;
     }
 
-    ret = snprintf(cached_host_key_path, sizeof(cached_host_key_path), "%s/%s.key", source_dir, hostname);
-    if (ret < 0 || (size_t)ret >= sizeof(cached_host_key_path)) {
+    ret = snprintf(host_key.path, sizeof(host_key.path), "%s/%s.key", source_dir, hostname);
+    if (ret < 0 || (size_t)ret >= sizeof(host_key.path)) {
         return -1;
     }
 
     // Open and validate the encrypted host key file using open_and_validate_path
     struct stat st;
-    fd = open_and_validate_path(cached_host_key_path, &st);
+    fd = open_and_validate_path(host_key.path, &st);
     if (fd >= 0) {
         struct stat real_st;
         if (fstat(fd, &real_st) == 0) {
             if ((real_st.st_uid != 0 && real_st.st_uid != geteuid()) ||
                 (real_st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
                 syslog(LOG_ERR, "init_decryption: Host key %s has insecure ownership or permissions (uid=%u, mode=%04o)",
-                       cached_host_key_path, real_st.st_uid, (unsigned int)(real_st.st_mode & 07777));
+                       host_key.path, real_st.st_uid, (unsigned int)(real_st.st_mode & 07777));
                 fprintf(stderr, "Error: Host key %s must be owned by root and not accessible by group or others.\n",
-                        cached_host_key_path);
+                        host_key.path);
                 close(fd);
                 return -1;
             }
-            if (real_st.st_size > 0 && real_st.st_size <= (off_t)sizeof(cached_host_key_enc)) {
+            if (real_st.st_size > 0 && real_st.st_size <= (off_t)sizeof(host_key.enc)) {
                 size_t bytes_read = 0;
                 while (bytes_read < (size_t)real_st.st_size) {
-                    ssize_t rd = pread(fd, cached_host_key_enc + bytes_read,
+                    ssize_t rd = pread(fd, host_key.enc + bytes_read,
                                        (size_t)real_st.st_size - bytes_read, (off_t)bytes_read);
                     if (rd < 0) {
                         if (errno == EINTR) {
@@ -181,7 +195,9 @@ int init_decryption(const char *source_dir) {
                     }
                     bytes_read += (size_t)rd;
                 }
-                cached_host_key_enc_len = bytes_read;
+                host_key.enc_len = bytes_read;
+                host_key.dev = real_st.st_dev;
+                host_key.ino = real_st.st_ino;
             } else {
                 close(fd);
                 return -1;
@@ -575,12 +591,12 @@ int decrypt_credential(int fd,
     }
 
     // AES flow: needs host key
-    if (cached_host_key_enc_len == 0) {
+    if (host_key.enc_len == 0) {
         r = -ENOKEY;
 	goto read_err;
     }
 
-    r = tpm2_rsa_decrypt(cached_host_key_enc, cached_host_key_enc_len, &passphrase);
+    r = tpm2_rsa_decrypt(host_key.enc, host_key.enc_len, &passphrase);
     if (r < 0) {
 	goto read_err;
     }

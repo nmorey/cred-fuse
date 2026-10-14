@@ -73,3 +73,14 @@ if cat "${WORKDIR}/credentials/gcm_tampered.enc" 2>/dev/null; then
     exit 1
 fi
 echo "TEST: AES-256-GCM integrity failure handling: Success"
+
+echo "Testing that host key is hidden from FUSE mount..."
+if [ -e "${WORKDIR}/credentials/${HOSTNAME}.key" ] || cat "${WORKDIR}/credentials/${HOSTNAME}.key" 2>/dev/null; then
+    echo "ERROR: Host key ${HOSTNAME}.key is exposed inside FUSE mount"
+    exit 1
+fi
+if ls "${WORKDIR}/credentials" | grep -qx "${HOSTNAME}.key"; then
+    echo "ERROR: Host key ${HOSTNAME}.key is listed in readdir"
+    exit 1
+fi
+echo "TEST: Host key hidden from FUSE mount: Success"

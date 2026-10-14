@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 struct cred_fuse_opts {
     char *source_dir;
@@ -32,6 +33,9 @@ void clean_decrypted_node(struct decrypted_node *node);
  * Returns 0 on success, < 0 on error.
  */
 int init_decryption(const char *source_dir);
+
+/* Returns non-zero if (dev, ino) matches the cached host key inode. */
+int is_host_key_inode(dev_t dev, ino_t ino);
 
 /* Checks if the TPM is in dictionary attack lockout mode.
  * Returns 0 if not locked out, < 0 on error or if locked out.
