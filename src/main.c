@@ -625,14 +625,17 @@ static int validate_tcti(const char *tcti) {
         return 0; // Unknown or forbidden scheme (e.g., mssim, none)
     }
 
-    // Bare scheme without options is only valid for device or tabrmd (never swtpm, which defaults to TCP)
+    // Bare scheme without ':options' (e.g., "tabrmd", "device", "swtpm")
     if (!colon) {
 #ifdef CRED_FUSE_ENABLE_SWTPM
         if (strcmp(scheme, "swtpm") == 0) {
-            return 0;
+            return 0; // Bare "swtpm" defaults to TCP; require "swtpm:path=/..."
         }
 #endif
-        return 1;
+        if (strcmp(scheme, "device") == 0) {
+            return 0; // Bare "device" can fall back to /dev/tpm0; require "device:/dev/tpmrm..."
+        }
+        return 1; // Bare "tabrmd" is valid
     }
 
     const char *options = colon + 1;
@@ -642,14 +645,14 @@ static int validate_tcti(const char *tcti) {
 
     // 2. Validate Options based on Scheme
     if (strcmp(scheme, "device") == 0) {
-        // Must be a safe device path: e.g. /dev/tpm0 or /dev/tpmrm0
-        if (strncmp(options, "/dev/tpm", 8) != 0) {
+        // Must use the in-kernel TPM resource manager: e.g. /dev/tpmrm0
+        if (strncmp(options, "/dev/tpmrm", 10) != 0 || options[10] == '\0') {
             return 0;
         }
-        for (size_t i = 8; options[i] != '\0'; i++) {
+        for (size_t i = 10; options[i] != '\0'; i++) {
             char c = options[i];
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
-                return 0; // Block path traversal, directories, or special chars
+            if (!(c >= '0' && c <= '9')) {
+                return 0; // Block raw /dev/tpm0, path traversal, or non-digits
             }
         }
 #ifdef CRED_FUSE_ENABLE_SWTPM
