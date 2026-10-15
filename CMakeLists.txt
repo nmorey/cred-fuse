@@ -36,33 +36,39 @@ target_link_libraries(mount.cred-fuse PRIVATE
 
 install(TARGETS mount.cred-fuse DESTINATION sbin)
 
-enable_testing()
+option(BUILD_TESTING "Build the testing tree and enable swtpm TCTI support" ON)
 
-add_test(NAME test_setup COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup.sh ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_setup PROPERTIES FIXTURES_SETUP tpm_fuse_fixture)
+if(BUILD_TESTING)
+    enable_testing()
+    target_compile_definitions(mount.cred-fuse PRIVATE CRED_FUSE_ENABLE_SWTPM=1)
 
-add_test(NAME test_cleanup COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cleanup.sh ${CMAKE_CURRENT_BINARY_DIR})
-set_tests_properties(test_cleanup PROPERTIES FIXTURES_CLEANUP tpm_fuse_fixture)
+    add_test(NAME test_setup COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup.sh ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(test_setup PROPERTIES FIXTURES_SETUP tpm_fuse_fixture)
 
-set(subtests
-    test_ro_option
-    test_valid
-    test_aes_gcm
-    test_permissions
-    test_missing_size
-    test_size_boundaries
-    test_readdir_many
-    test_dynamic_file
-    test_max_file_size
-    test_max_open_files
-    test_inode_eviction
-    test_tcti_validation
-)
+    add_test(NAME test_cleanup COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cleanup.sh ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(test_cleanup PROPERTIES FIXTURES_CLEANUP tpm_fuse_fixture)
 
-foreach(subtest ${subtests})
-    add_test(NAME ${subtest} COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/${subtest}.sh $<TARGET_FILE:mount.cred-fuse> ${CMAKE_CURRENT_BINARY_DIR})
-    set_tests_properties(${subtest} PROPERTIES
-        FIXTURES_REQUIRED tpm_fuse_fixture
-        RUN_SERIAL TRUE
+    set(subtests
+        test_ro_option
+        test_valid
+        test_aes_gcm
+        test_permissions
+        test_missing_size
+        test_size_boundaries
+        test_readdir_many
+        test_dynamic_file
+        test_max_file_size
+        test_max_open_files
+        test_inode_eviction
+        test_tcti_validation
     )
-endforeach()
+
+    foreach(subtest ${subtests})
+        add_test(NAME ${subtest} COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/${subtest}.sh $<TARGET_FILE:mount.cred-fuse> ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(${subtest} PROPERTIES
+            FIXTURES_REQUIRED tpm_fuse_fixture
+            RUN_SERIAL TRUE
+        )
+    endforeach()
+endif()
+

@@ -22,7 +22,11 @@ bad_tctis=(
     "tabrmd:bus_name=val;evil"
     "invalid_scheme"
     "device:"
+    "swtpm"
+    "swtpm:"
     "swtpm:path="
+    "swtpm:path=/"
+    "swtpm:path=/tmp/../evil.sock"
 )
 
 for tcti in "${bad_tctis[@]}"; do

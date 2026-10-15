@@ -599,7 +599,13 @@ static int validate_tcti(const char *tcti) {
         return 1;
     }
 
-    const char *allowed_schemes[] = { "device", "swtpm", "tabrmd" };
+    const char *allowed_schemes[] = {
+        "device",
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        "swtpm",
+#endif
+        "tabrmd"
+    };
     size_t allowed_count = sizeof(allowed_schemes) / sizeof(allowed_schemes[0]);
 
     const char *colon = strchr(tcti, ':');
@@ -619,8 +625,13 @@ static int validate_tcti(const char *tcti) {
         return 0; // Unknown or forbidden scheme (e.g., mssim, none)
     }
 
-    // If there are no options, the scheme prefix alone is valid
+    // Bare scheme without options is only valid for device or tabrmd (never swtpm, which defaults to TCP)
     if (!colon) {
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        if (strcmp(scheme, "swtpm") == 0) {
+            return 0;
+        }
+#endif
         return 1;
     }
 
@@ -641,14 +652,18 @@ static int validate_tcti(const char *tcti) {
                 return 0; // Block path traversal, directories, or special chars
             }
         }
+#ifdef CRED_FUSE_ENABLE_SWTPM
     } else if (strcmp(scheme, "swtpm") == 0) {
         // Swtpm requires path=/absolute/path/to/socket
         if (strncmp(options, "path=", 5) != 0) {
             return 0;
         }
         const char *path = options + 5;
-        if (*path != '/') {
-            return 0; // Must be absolute path
+        if (path[0] != '/' || path[1] == '\0') {
+            return 0; // Must be a non-root absolute path
+        }
+        if (strstr(path, "..") != NULL) {
+            return 0; // Block path traversal sequences
         }
         for (size_t i = 0; path[i] != '\0'; i++) {
             char c = path[i];
@@ -657,6 +672,7 @@ static int validate_tcti(const char *tcti) {
                 return 0; // Block commands, wildcard shells, etc.
             }
         }
+#endif
     } else if (strcmp(scheme, "tabrmd") == 0) {
         // Tabrmd allows bus_name and bus_type (alphanumeric, =, ,, -, _, .)
         for (size_t i = 0; options[i] != '\0'; i++) {
@@ -679,6 +695,11 @@ int main(int argc, char *argv[]) {
     int ret = -1;
 
     memset(&opts, 0, sizeof(opts));
+
+    // Scrub TCTI environment variables so libtss2-tctildr cannot be hijacked when -o tcti is omitted
+    unsetenv("TSS2_TCTI");
+    unsetenv("TPM2TOOLS_TCTI");
+    unsetenv("TCTI");
 
     // Disable core dumps
     if (prctl(PR_SET_DUMPABLE, 0) != 0) {
