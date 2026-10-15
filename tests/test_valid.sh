@@ -18,8 +18,21 @@ setfattr -n user.size -v c "${WORKDIR}/source/valid.enc" # 'c' is 12 bytes
 chmod 644 "${WORKDIR}/source/valid.enc"
 rm -f "${WORKDIR}/valid.txt"
 
-# Start standard FUSE mount
-start_fuse "${FUSE_EXE}"
+# Export TPM public key in PEM format and generate a mismatched RSA public key
+tpm2_readpublic -Q -c 0x81010002 -f pem -o "${WORKDIR}/tpm_pub.pem" -T "swtpm"
+chmod 644 "${WORKDIR}/tpm_pub.pem"
+openssl genrsa 2048 2>/dev/null | openssl rsa -pubout -out "${WORKDIR}/wrong_pub.pem" 2>/dev/null
+chmod 644 "${WORKDIR}/wrong_pub.pem"
+
+echo "Testing rejection of mismatched tpm_pubkey..."
+if "${FUSE_EXE}" -f "${WORKDIR}/source" "${WORKDIR}/credentials" -o "tpm_handle=0x81010002,tpm_pubkey=${WORKDIR}/wrong_pub.pem,tcti=swtpm,ro,default_permissions" 2>/dev/null; then
+    echo "ERROR: FUSE mounted despite mismatched tpm_pubkey"
+    exit 1
+fi
+echo "TEST: Rejection of mismatched tpm_pubkey: Success"
+
+# Start standard FUSE mount with valid tpm_pubkey
+start_fuse "${FUSE_EXE}" "tpm_pubkey=${WORKDIR}/tpm_pub.pem"
 
 echo "Testing valid file decryption..."
 if [ "$(cat "${WORKDIR}/credentials/valid.enc")" != "valid-secret" ]; then

@@ -57,6 +57,7 @@ int mlockall_active = 0;
 #define CRED_OPT(t, p) { t, offsetof(struct cred_fuse_opts, p), 1 }
 static const struct fuse_opt cred_opts[] = {
     CRED_OPT("tpm_handle=%s", tpm_handle_str),
+    CRED_OPT("tpm_pubkey=%s", tpm_pubkey),
     CRED_OPT("tcti=%s", tcti),
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
@@ -898,6 +899,7 @@ err_early:
     free(global_opts.mountpoint);
     free(global_opts.source_dir);
     free(global_opts.tpm_handle_str);
+    free(global_opts.tpm_pubkey);
     free(global_opts.tcti);
     fuse_opt_free_args(&args);
 

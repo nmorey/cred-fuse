@@ -11,6 +11,7 @@ struct cred_fuse_opts {
     char *mountpoint;
     char *tpm_handle_str;
     uint32_t tpm_handle;
+    char *tpm_pubkey;
     char *tcti;
     int max_open_files;
     int max_file_size;

@@ -12,8 +12,8 @@ pkg_check_modules(FUSE3 REQUIRED fuse3)
 # OpenSSL
 find_package(OpenSSL REQUIRED)
 
-# TSS2 Requirements (libtss2-esys, libtss2-rc, libtss2-tctildr)
-pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr)
+# TSS2 Requirements (libtss2-esys, libtss2-rc, libtss2-tctildr, libtss2-mu)
+pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr tss2-mu)
 
 # libaudit for security audit logging and rules
 pkg_check_modules(LIBAUDIT REQUIRED audit)
