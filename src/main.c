@@ -536,7 +536,11 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     }
 
     free(path);
-    fuse_reply_open(req, fi);
+    if (fuse_reply_open(req, fi) < 0) {
+        clean_decrypted_node(node);
+        free(node);
+        __atomic_sub_fetch(&open_files_per_uid[uid_slot], 1, __ATOMIC_SEQ_CST);
+    }
     return;
 
 err_free_node:
