@@ -295,15 +295,8 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         return;
     }
 
-    char full_path[PATH_MAX];
-    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
-    if (path_ret < 0) {
-        reply_err_and_audit(req, -path_ret, "lookup", parent, name);
-        return;
-    }
-
     struct stat st;
-    int fd = open_and_validate_path(full_path, &st);
+    int fd = open_and_validate_path(rel_path, &st);
     if (fd < 0) {
         reply_err_and_audit(req, -fd, "lookup", parent, name);
         return;
@@ -502,16 +495,8 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         return;
     }
 
-    char full_path[PATH_MAX];
-    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
-    if (path_ret < 0) {
-        free(rel_path);
-        reply_err_and_audit(req, -path_ret, "readdir", ino, NULL);
-        return;
-    }
-
     struct stat st;
-    int dir_fd = open_and_validate_path(full_path, &st);
+    int dir_fd = open_and_validate_path(rel_path, &st);
     if (dir_fd < 0) {
         free(rel_path);
         reply_err_and_audit(req, -dir_fd, "readdir", ino, NULL);
@@ -587,23 +572,19 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             break;
         }
 
+        // Construct the relative path of this entry to validate and register/find its inode
+        char entry_rel_path[PATH_MAX];
+        if (join_paths(entry_rel_path, sizeof(entry_rel_path), rel_path, de->d_name) < 0) {
+            continue;
+        }
+
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
-            char subpath[PATH_MAX];
-            if (join_paths(subpath, sizeof(subpath), full_path, de->d_name) < 0) {
-                continue;
-            }
             struct stat tmp_st;
-            int fd = open_and_validate_path(subpath, &tmp_st);
+            int fd = open_and_validate_path(entry_rel_path, &tmp_st);
             if (fd < 0) {
                 continue; // Skip invalid, unmanaged, or symlinked files cleanly
             }
             close(fd);
-        }
-
-        // Construct the relative path of this entry to register or find its inode
-        char entry_rel_path[PATH_MAX];
-        if (join_paths(entry_rel_path, sizeof(entry_rel_path), rel_path, de->d_name) < 0) {
-            continue;
         }
 
         fuse_ino_t entry_ino;
@@ -788,6 +769,7 @@ int main(int argc, char *argv[]) {
     }
 
     memset(&global_opts, 0, sizeof(global_opts));
+    global_opts.source_dir_fd = -1;
     global_opts.max_open_files = 1024;
     global_opts.max_file_size = MAX_ALLOWED_FILE_SIZE;
 
@@ -818,6 +800,28 @@ int main(int argc, char *argv[]) {
     free(global_opts.source_dir);
     global_opts.source_dir = abs_source_dir;
     global_opts.source_dir_len = strlen(abs_source_dir);
+
+    global_opts.source_dir_fd = open(global_opts.source_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (global_opts.source_dir_fd < 0) {
+        perror("Failed to open source_dir");
+        ret = 1;
+        goto err_early;
+    }
+    struct stat sd_st;
+    if (fstat(global_opts.source_dir_fd, &sd_st) != 0) {
+        perror("Failed to stat source_dir");
+        ret = 1;
+        goto err_early;
+    }
+#ifdef CRED_FUSE_ENABLE_SWTPM
+    if (sd_st.st_uid != 0 && sd_st.st_uid != geteuid()) {
+#else
+    if (sd_st.st_uid != 0) {
+#endif
+        fprintf(stderr, "Error: source_dir must be owned by root.\n");
+        ret = 1;
+        goto err_early;
+    }
 
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
@@ -1014,6 +1018,9 @@ err_session:
 err_opts:
     free(opts.mountpoint);
 err_early:
+    if (global_opts.source_dir_fd >= 0) {
+        close(global_opts.source_dir_fd);
+    }
     free(global_opts.mountpoint);
     free(global_opts.source_dir);
     free(global_opts.tpm_handle_str);

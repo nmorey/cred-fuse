@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #include "path.h"
 #include "inode.h"
 #include "decryption.h"
@@ -6,8 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <endian.h>
+#include <linux/openat2.h>
+#include <sys/syscall.h>
 
 /* Safely join a parent path and a component name, avoiding duplicate slashes */
 int join_paths(char *dest, size_t size, const char *parent, const char *child) {
@@ -31,66 +35,25 @@ int join_paths(char *dest, size_t size, const char *parent, const char *child) {
     return 0;
 }
 
-/* Convert relative fuse path to absolute path in source_dir */
-int build_path(char *dest, size_t size, const char *rel_path) {
-    int ret;
-
-    const char *p = rel_path;
-    while (*p) {
-        while (*p == '/') {
-            p++;
-        }
-        if (*p == '\0') {
-            break;
-        }
-        const char *end = p;
-        while (*end && *end != '/') {
-            end++;
-        }
-        if (end - p == 2 && p[0] == '.' && p[1] == '.') {
-            return -EACCES;
-        }
-        p = end;
+/* Safely open, query, and validate file metadata relative to source_dir_fd */
+int open_and_validate_path(const char *rel_path, struct stat *st_out) {
+    if (!rel_path || !st_out || global_opts.source_dir_fd < 0) {
+        return -EINVAL;
     }
 
-    if (strcmp(rel_path, "/") == 0) {
-        ret = snprintf(dest, size, "%s", global_opts.source_dir);
-    } else {
-        ret = snprintf(dest, size, "%s%s", global_opts.source_dir, rel_path);
+    while (*rel_path == '/') {
+        rel_path++;
     }
+    const char *target = (*rel_path == '\0') ? "." : rel_path;
 
-    if (ret < 0 || (size_t)ret >= size) {
-        return -ENAMETOOLONG;
-    }
+    struct open_how how = {
+        .flags = O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS,
+    };
 
-    return 0;
-}
-
-/* Safely open, query, and validate file metadata using a secure file descriptor */
-int open_and_validate_path(const char *full_path, struct stat *st_out) {
-    int fd = open(full_path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    int fd = (int)syscall(SYS_openat2, global_opts.source_dir_fd, target, &how, sizeof(how));
     if (fd < 0) {
-        return -errno;
-    }
-
-    // Resolve fd's path to prevent intermediate symlink sandbox escapes
-    char fd_path[64];
-    int r = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-    if (r < 0 || (size_t)r >= sizeof(fd_path)) {
-        close(fd);
-        return -ENAMETOOLONG;
-    }
-    char resolved_path[PATH_MAX];
-    if (!realpath(fd_path, resolved_path)) {
-        close(fd);
-        return -errno;
-    }
-
-    size_t sd_len = global_opts.source_dir_len;
-    if (strncmp(resolved_path, global_opts.source_dir, sd_len) != 0 ||
-        (resolved_path[sd_len] != '\0' && resolved_path[sd_len] != '/')) {
-        close(fd);
-        return -EACCES;
+        return (errno == EXDEV) ? -EACCES : -errno;
     }
 
     if (fstat(fd, st_out) != 0) {
@@ -130,6 +93,11 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
     }
 
     if (S_ISREG(st_out->st_mode)) {
+        if (st_out->st_nlink > 1) {
+            close(fd);
+            return -EACCES;
+        }
+
         uint8_t hdr[18];
         ssize_t n = pread(fd, hdr, sizeof(hdr), 0);
         if (n != (ssize_t)sizeof(hdr)) {
@@ -182,12 +150,7 @@ int open_and_validate_ino(fuse_ino_t ino, struct stat *st_out) {
         return -errno;
     }
 
-    char full_path[PATH_MAX];
-    int path_ret = build_path(full_path, sizeof(full_path), rel_path);
+    int fd = open_and_validate_path(rel_path, st_out);
     free(rel_path);
-    if (path_ret < 0) {
-        return path_ret;
-    }
-
-    return open_and_validate_path(full_path, st_out);
+    return fd;
 }

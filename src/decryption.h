@@ -19,6 +19,7 @@
 struct cred_fuse_opts {
     char *source_dir;
     size_t source_dir_len;
+    int source_dir_fd;
     char *mountpoint;
     char *tpm_handle_str;
     uint32_t tpm_handle;
