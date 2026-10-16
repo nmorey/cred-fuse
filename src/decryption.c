@@ -1025,7 +1025,7 @@ int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
         return -EFBIG;
     }
 
-    struct decrypted_node eph_key = { NULL, 0, 0 };
+    struct decrypted_node eph_key = { 0 };
     r = tpm2_rsa_decrypt(rsa_ct, rsa_ct_len, aad, &eph_key);
     if (r < 0) {
         clean_decrypted_node(&eph_key);

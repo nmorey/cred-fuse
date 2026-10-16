@@ -32,6 +32,7 @@ struct decrypted_node {
     uint8_t *buf;
     size_t len;
     size_t allocated_size;
+    uint16_t uid_slot;
 };
 
 extern struct cred_fuse_opts global_opts;

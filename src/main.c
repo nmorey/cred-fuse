@@ -97,7 +97,13 @@ static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outa
     return 1; /* Keep other arguments (like the mountpoint) */
 }
 
-static int current_open_files = 0;
+#define MAX_SYSTEM_UID 1000
+#define UID_COUNTER_SLOTS (MAX_SYSTEM_UID + 1)
+static int open_files_per_uid[UID_COUNTER_SLOTS];
+
+static inline uint16_t uid_to_slot(uid_t uid) {
+    return (uid < MAX_SYSTEM_UID) ? (uint16_t)uid : (uint16_t)MAX_SYSTEM_UID;
+}
 
 static int audit_fd = -1;
 
@@ -346,7 +352,8 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         return;
     }
 
-    int current = __atomic_add_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    uint16_t uid_slot = uid_to_slot(fuse_req_ctx(req)->uid);
+    int current = __atomic_add_fetch(&open_files_per_uid[uid_slot], 1, __ATOMIC_SEQ_CST);
     if (current > global_opts.max_open_files) {
         err_code = ENFILE;
         goto err_decrement;
@@ -373,6 +380,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         goto err_free_path;
     }
     memset(node, 0, sizeof(*node));
+    node->uid_slot = uid_slot;
 
     int r = decrypt_credential(fd, path, node);
     if (r < 0) {
@@ -422,7 +430,7 @@ err_free_path:
 err_close:
     close(fd);
 err_decrement:
-    __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+    __atomic_sub_fetch(&open_files_per_uid[uid_slot], 1, __ATOMIC_SEQ_CST);
     reply_err_and_audit(req, err_code, "open", ino, NULL);
 }
 
@@ -458,9 +466,10 @@ static void cred_ll_release(fuse_req_t req, fuse_ino_t ino __attribute__((unused
 			    struct fuse_file_info *fi) {
     struct decrypted_node *node = (struct decrypted_node *)fi->fh;
     if (node) {
+        uint16_t uid_slot = node->uid_slot;
         clean_decrypted_node(node);
         free(node);
-        __atomic_sub_fetch(&current_open_files, 1, __ATOMIC_SEQ_CST);
+        __atomic_sub_fetch(&open_files_per_uid[uid_slot], 1, __ATOMIC_SEQ_CST);
     }
     fuse_reply_err(req, 0);
 }
