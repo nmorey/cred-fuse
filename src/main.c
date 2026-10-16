@@ -48,6 +48,7 @@ struct cred_fuse_opts global_opts;
 enum {
     KEY_RO,
     KEY_DEFAULT_PERMISSIONS,
+    KEY_FORBIDDEN_MOUNT_OPT,
 };
 
 static int is_ro = 0;
@@ -63,12 +64,21 @@ static const struct fuse_opt cred_opts[] = {
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
     FUSE_OPT_KEY("ro", KEY_RO),
     FUSE_OPT_KEY("default_permissions", KEY_DEFAULT_PERMISSIONS),
+    FUSE_OPT_KEY("rw", KEY_FORBIDDEN_MOUNT_OPT),
+    FUSE_OPT_KEY("suid", KEY_FORBIDDEN_MOUNT_OPT),
+    FUSE_OPT_KEY("dev", KEY_FORBIDDEN_MOUNT_OPT),
+    FUSE_OPT_KEY("exec", KEY_FORBIDDEN_MOUNT_OPT),
     FUSE_OPT_END
 };
 
 static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs) {
     (void)data;
     (void)outargs;
+
+    if (key == KEY_FORBIDDEN_MOUNT_OPT) {
+        fprintf(stderr, "Error: Mount option '%s' is forbidden.\n", arg);
+        return -1;
+    }
 
     if (key == KEY_RO) {
         is_ro = 1;
@@ -246,6 +256,14 @@ static int is_valid_name(const char *name) {
     return 1;
 }
 
+static void sanitize_stat_mode(struct stat *st) {
+    if (S_ISREG(st->st_mode)) {
+        st->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH | S_IXUSR | S_IXGRP | S_IXOTH | S_ISUID | S_ISGID | S_ISVTX);
+    } else {
+        st->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH | S_ISUID | S_ISGID);
+    }
+}
+
 /* 1. LOOKUP: Translate a path component to an inode */
 static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
     if (!is_valid_name(name)) {
@@ -294,7 +312,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     e.entry_timeout = 1.0;
     e.attr = st;
     e.attr.st_ino = e.ino;
-    e.attr.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    sanitize_stat_mode(&e.attr);
 
     fuse_reply_entry(req, &e);
 }
@@ -311,7 +329,7 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
     close(fd);
 
     st.st_ino = ino;
-    st.st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    sanitize_stat_mode(&st);
     fuse_reply_attr(req, &st, 1.0);
 }
 
@@ -599,6 +617,61 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     free(rel_path);
 }
 
+/* 8. GETXATTR: Forward POSIX ACL and LSM/SELinux extended attributes */
+static void cred_ll_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
+    if (!name ||
+        (strcmp(name, "system.posix_acl_access") != 0 &&
+         strcmp(name, "system.posix_acl_default") != 0 &&
+         strncmp(name, "security.", 9) != 0)) {
+        fuse_reply_err(req, ENODATA);
+        return;
+    }
+
+    struct stat st;
+    int fd = open_and_validate_ino(ino, &st);
+    if (fd < 0) {
+        reply_err_and_audit(req, -fd, "getxattr", ino, name);
+        return;
+    }
+
+    if (size == 0) {
+        ssize_t res = fgetxattr(fd, name, NULL, 0);
+        int saved_errno = errno;
+        close(fd);
+        if (res < 0) {
+            fuse_reply_err(req, saved_errno);
+        } else {
+            fuse_reply_xattr(req, (size_t)res);
+        }
+        return;
+    }
+
+    if (size > 65536) {
+        close(fd);
+        fuse_reply_err(req, ERANGE);
+        return;
+    }
+
+    char *buf = malloc(size);
+    if (!buf) {
+        close(fd);
+        fuse_reply_err(req, ENOMEM);
+        return;
+    }
+
+    ssize_t res = fgetxattr(fd, name, buf, size);
+    int saved_errno = errno;
+    close(fd);
+
+    if (res < 0) {
+        free(buf);
+        fuse_reply_err(req, saved_errno);
+    } else {
+        fuse_reply_buf(req, buf, (size_t)res);
+        free(buf);
+    }
+}
+
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_session *se = NULL;
@@ -754,14 +827,21 @@ int main(int argc, char *argv[]) {
         goto err_opts;
     }
 
+    if (fuse_opt_add_arg(&args, "-oro,default_permissions,nosuid,nodev,noexec") != 0) {
+        fprintf(stderr, "Error: Failed to enforce mount hardening flags.\n");
+        ret = 1;
+        goto err_opts;
+    }
+
     static const struct fuse_lowlevel_ops cred_ll_oper = {
-        .lookup  = cred_ll_lookup,
-        .getattr = cred_ll_getattr,
-        .open    = cred_ll_open,
-        .read    = cred_ll_read,
-        .readdir = cred_ll_readdir,
-        .release = cred_ll_release,
-        .forget  = cred_ll_forget,
+        .lookup   = cred_ll_lookup,
+        .getattr  = cred_ll_getattr,
+        .getxattr = cred_ll_getxattr,
+        .open     = cred_ll_open,
+        .read     = cred_ll_read,
+        .readdir  = cred_ll_readdir,
+        .release  = cred_ll_release,
+        .forget   = cred_ll_forget,
     };
 
     se = fuse_session_new(&args, &cred_ll_oper, sizeof(cred_ll_oper), NULL);
