@@ -17,7 +17,10 @@
 int join_paths(char *dest, size_t size, const char *parent, const char *child) {
     int ret;
 
-    if (!dest || !parent || !child) {
+    if (!dest || !parent || !child || *child == '\0') {
+        return -EINVAL;
+    }
+    if (strcmp(child, ".") == 0 || strcmp(child, "..") == 0 || strchr(child, '/') != NULL) {
         return -EINVAL;
     }
 

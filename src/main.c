@@ -362,6 +362,9 @@ static int is_valid_name(const char *name) {
     if (!name || *name == '\0') {
         return 0;
     }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 0;
+    }
     for (int i = 0; name[i] != '\0'; i++) {
         char c = name[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
