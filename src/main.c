@@ -423,7 +423,9 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
     e.attr.st_ino = e.ino;
     sanitize_stat_mode(&e.attr);
 
-    fuse_reply_entry(req, &e);
+    if (fuse_reply_entry(req, &e) < 0) {
+        inode_forget(new_ino, 1);
+    }
 }
 
 /* 2. GETATTR: Retrieve file or directory attributes */
