@@ -14,6 +14,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#define _DEFAULT_SOURCE
 #define FUSE_USE_VERSION 312
 
 #include <fuse3/fuse_lowlevel.h>
@@ -30,6 +31,9 @@
 #include <sys/xattr.h>
 #include <openssl/crypto.h>
 #include <sys/prctl.h>
+#include <linux/capability.h>
+#include <sys/syscall.h>
+#include <grp.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <pthread.h>
@@ -681,6 +685,70 @@ static void cred_ll_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, s
     }
 }
 
+static int set_process_caps(uint64_t eff_mask, uint64_t perm_mask) {
+    struct __user_cap_header_struct hdr = {
+        .version = _LINUX_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    struct __user_cap_data_struct data[2];
+    memset(data, 0, sizeof(data));
+
+    data[0].effective = (uint32_t)(eff_mask & 0xFFFFFFFFULL);
+    data[1].effective = (uint32_t)(eff_mask >> 32);
+    data[0].permitted = (uint32_t)(perm_mask & 0xFFFFFFFFULL);
+    data[1].permitted = (uint32_t)(perm_mask >> 32);
+    data[0].inheritable = 0;
+    data[1].inheritable = 0;
+
+    return (int)syscall(SYS_capset, &hdr, data);
+}
+
+static int drop_privileges(void) {
+#ifdef CRED_FUSE_ENABLE_SWTPM
+    if (geteuid() != 0) {
+        return 0;
+    }
+#endif
+    /* Ensure the daemon belongs to the 'tss' group if present so /dev/tpmrm*
+     * (commonly 0660 root:tss or tss:tss) remains accessible without CAP_DAC_OVERRIDE. */
+    struct group *tss_grp = getgrnam("tss");
+    if (tss_grp != NULL) {
+        gid_t gids[1] = { tss_grp->gr_gid };
+        (void)setgroups(1, gids);
+    }
+
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        perror("Failed to set PR_SET_NO_NEW_PRIVS");
+        return -1;
+    }
+
+    (void)prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+
+    uint64_t eff_mask = (1ULL << CAP_DAC_READ_SEARCH) |
+                        (1ULL << CAP_IPC_LOCK) |
+                        (1ULL << CAP_AUDIT_WRITE);
+    uint64_t perm_mask = eff_mask |
+                         (1ULL << CAP_AUDIT_CONTROL) |
+                         (1ULL << CAP_SYS_ADMIN);
+
+    for (int cap = 0; cap <= CAP_LAST_CAP; cap++) {
+        if (cap < 64 && (perm_mask & (1ULL << cap))) {
+            continue;
+        }
+        if (prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0 && errno != EINVAL) {
+            perror("Failed to drop capability from bounding set");
+            return -1;
+        }
+    }
+
+    if (set_process_caps(eff_mask, perm_mask) != 0) {
+        perror("Failed to drop process capabilities");
+        return -1;
+    }
+
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_session *se = NULL;
@@ -895,6 +963,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.\n", strerror(errno));
     }
 
+    if (drop_privileges() != 0) {
+        ret = 1;
+        goto err_unmount;
+    }
+
     atexit(cleanup_inodes);
 
     /* Run standard event loop */
@@ -913,6 +986,17 @@ int main(int argc, char *argv[]) {
     }
 
 err_unmount:
+#ifdef CRED_FUSE_ENABLE_SWTPM
+    if (geteuid() == 0)
+#endif
+    {
+        uint64_t shutdown_mask = (1ULL << CAP_DAC_READ_SEARCH) |
+                                 (1ULL << CAP_IPC_LOCK) |
+                                 (1ULL << CAP_AUDIT_WRITE) |
+                                 (1ULL << CAP_AUDIT_CONTROL) |
+                                 (1ULL << CAP_SYS_ADMIN);
+        (void)set_process_caps(shutdown_mask, shutdown_mask);
+    }
     if (audit_fd >= 0) {
         manage_audit_rules(global_opts.source_dir, getpid(), 0);
         shutdown_audit_system();
