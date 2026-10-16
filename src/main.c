@@ -479,48 +479,21 @@ static void cred_ll_release(fuse_req_t req, fuse_ino_t ino __attribute__((unused
 }
 
 /* 6. READDIR: Formats directory entries directly */
-#define DIR_BUF_CHUNK_SIZE 16384
-
-struct dir_buf {
-    char *p;
-    size_t size;
-    size_t capacity;
-};
-
-static int dir_buf_add(fuse_req_t req, struct dir_buf *b, const char *name, fuse_ino_t ino) {
-    struct stat st;
-    memset(&st, 0, sizeof(st));
-    st.st_ino = ino;
-
-    size_t oldsize = b->size;
-    size_t entry_size = fuse_add_direntry(req, NULL, 0, name, NULL, 0);
-    size_t needed = oldsize + entry_size;
-
-    if (needed > b->capacity) {
-        if (needed > (size_t)-1 - DIR_BUF_CHUNK_SIZE) {
-            return -1; /* Overflow protection */
-        }
-        size_t chunks = (needed + DIR_BUF_CHUNK_SIZE - 1) / DIR_BUF_CHUNK_SIZE;
-        size_t new_capacity = chunks * DIR_BUF_CHUNK_SIZE;
-
-        char *temp = realloc(b->p, new_capacity);
-        if (!temp) {
-            return -1;
-        }
-        b->p = temp;
-        b->capacity = new_capacity;
-    }
-
-    b->size = needed;
-    fuse_add_direntry(req, b->p + oldsize, entry_size, name, &st, b->size);
-    return 0;
-}
+#define MAX_READDIR_BUF_SIZE 65536
 
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
     (void)fi;
     if (off < 0) {
         reply_err_and_audit(req, EINVAL, "readdir", ino, NULL);
         return;
+    }
+
+    if (size == 0) {
+        fuse_reply_buf(req, NULL, 0);
+        return;
+    }
+    if (size > MAX_READDIR_BUF_SIZE) {
+        size = MAX_READDIR_BUF_SIZE;
     }
 
     char *rel_path = get_inode_path(ino);
@@ -553,22 +526,51 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         return;
     }
 
-    struct dir_buf b;
-    memset(&b, 0, sizeof(b));
-
-    // Add standard directory directory markers
-    if (dir_buf_add(req, &b, ".", ino) != 0 ||
-        dir_buf_add(req, &b, "..", 1) != 0) {
-        free(b.p);
+    char *buf = malloc(size);
+    if (!buf) {
         closedir(dp);
         free(rel_path);
         reply_err_and_audit(req, ENOMEM, "readdir", ino, NULL);
         return;
     }
 
+    size_t used = 0;
+
+    if (off <= 0) {
+        size_t entry_size = fuse_add_direntry(req, NULL, 0, ".", NULL, 0);
+        if (used + entry_size <= size) {
+            struct stat dot_st;
+            memset(&dot_st, 0, sizeof(dot_st));
+            dot_st.st_ino = ino;
+            fuse_add_direntry(req, buf + used, size - used, ".", &dot_st, 1);
+            used += entry_size;
+        } else {
+            goto done;
+        }
+    }
+
+    if (off <= 1) {
+        size_t entry_size = fuse_add_direntry(req, NULL, 0, "..", NULL, 0);
+        if (used + entry_size <= size) {
+            struct stat dotdot_st;
+            memset(&dotdot_st, 0, sizeof(dotdot_st));
+            dotdot_st.st_ino = 1;
+            fuse_add_direntry(req, buf + used, size - used, "..", &dotdot_st, 2);
+            used += entry_size;
+        } else {
+            goto done;
+        }
+    }
+
+    off_t cur_idx = 2;
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
+            continue;
+        }
+
+        off_t this_idx = cur_idx++;
+        if (this_idx < off) {
             continue;
         }
 
@@ -578,6 +580,11 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
 
         if (de->d_type == DT_LNK) {
             continue; // Skip symbolic links entirely
+        }
+
+        size_t entry_size = fuse_add_direntry(req, NULL, 0, de->d_name, NULL, 0);
+        if (used + entry_size > size) {
+            break;
         }
 
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
@@ -599,34 +606,32 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             continue;
         }
 
-	fuse_ino_t entry_ino;
-	switch(de->d_type){
-	case DT_REG:
-	case DT_UNKNOWN:
-	case DT_DIR:
-	    entry_ino = add_inode(entry_rel_path, 0);
-	    break;
-	default:
-	    entry_ino = find_inode(entry_rel_path);
+        fuse_ino_t entry_ino;
+        switch (de->d_type) {
+        case DT_REG:
+        case DT_UNKNOWN:
+        case DT_DIR:
+            entry_ino = add_inode(entry_rel_path, 0);
+            break;
+        default:
+            entry_ino = find_inode(entry_rel_path);
             break;
         }
-	if (entry_ino)
-	    if (dir_buf_add(req, &b, de->d_name, entry_ino) != 0)
-		break;
-    }
-    closedir(dp);
-
-    if (off < (off_t)b.size) {
-        size_t chunk = b.size - off;
-        if (chunk > size) {
-            chunk = size;
+        if (!entry_ino) {
+            continue;
         }
-        fuse_reply_buf(req, b.p + (size_t)off, chunk);
-    } else {
-        fuse_reply_buf(req, NULL, 0);
+
+        struct stat entry_st;
+        memset(&entry_st, 0, sizeof(entry_st));
+        entry_st.st_ino = entry_ino;
+        fuse_add_direntry(req, buf + used, size - used, de->d_name, &entry_st, this_idx + 1);
+        used += entry_size;
     }
 
-    free(b.p);
+done:
+    closedir(dp);
+    fuse_reply_buf(req, used > 0 ? buf : NULL, used);
+    free(buf);
     free(rel_path);
 }
 
