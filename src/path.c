@@ -104,6 +104,20 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
         return -EACCES;
     }
 
+    if (S_ISDIR(st_out->st_mode)) {
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        if (st_out->st_uid != 0 && st_out->st_uid != geteuid()) {
+            close(fd);
+            return -EACCES;
+        }
+#else
+        if (st_out->st_uid != 0) {
+            close(fd);
+            return -EACCES;
+        }
+#endif
+    }
+
     // Reset O_NONBLOCK flag so that subsequent I/O behaves normally
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) {

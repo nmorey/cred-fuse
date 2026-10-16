@@ -681,6 +681,13 @@ int main(int argc, char *argv[]) {
 
     memset(&opts, 0, sizeof(opts));
 
+#ifndef CRED_FUSE_ENABLE_SWTPM
+    if (geteuid() != 0) {
+        fprintf(stderr, "Error: mount.cred-fuse must be run as root.\n");
+        return 1;
+    }
+#endif
+
     // Scrub TCTI environment variables so libtss2-tctildr cannot be hijacked when -o tcti is omitted
     unsetenv("TSS2_TCTI");
     unsetenv("TPM2TOOLS_TCTI");
