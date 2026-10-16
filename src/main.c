@@ -116,7 +116,8 @@ static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 static void init_audit_system(void) {
     audit_fd = audit_open();
     if (audit_fd < 0) {
-        fprintf(stderr, "Warning: Failed to open kernel audit netlink socket (errno: %d)\n", errno);
+        syslog(LOG_WARNING, "Warning: Failed to open kernel audit netlink socket: %s (errno: %d)",
+               strerror(errno), errno);
     }
 }
 
@@ -818,7 +819,7 @@ static int drop_privileges(void) {
     }
 
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
-        perror("Failed to set PR_SET_NO_NEW_PRIVS");
+        syslog(LOG_ERR, "Failed to set PR_SET_NO_NEW_PRIVS: %s", strerror(errno));
         return -1;
     }
 
@@ -836,13 +837,13 @@ static int drop_privileges(void) {
             continue;
         }
         if (prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0 && errno != EINVAL) {
-            perror("Failed to drop capability from bounding set");
+            syslog(LOG_ERR, "Failed to drop capability %d from bounding set: %s", cap, strerror(errno));
             return -1;
         }
     }
 
     if (set_process_caps(eff_mask, perm_mask) != 0) {
-        perror("Failed to drop process capabilities");
+        syslog(LOG_ERR, "Failed to drop process capabilities: %s", strerror(errno));
         return -1;
     }
 
@@ -1069,10 +1070,22 @@ int main(int argc, char *argv[]) {
 
     /* Handle standard daemonization background fork */
     fuse_daemonize(opts.foreground);
+    openlog("mount.cred-fuse", LOG_PID | (opts.foreground ? LOG_PERROR : 0), LOG_DAEMON);
 
     init_audit_system();
     if (audit_fd >= 0) {
-        manage_audit_rules(global_opts.source_dir, getpid(), 1);
+        if (manage_audit_rules(global_opts.source_dir, getpid(), 1) != 0) {
+            syslog(LOG_WARNING, "Warning: Failed to install kernel audit rules for %s", global_opts.source_dir);
+        }
+    }
+
+    struct rlimit memlock_rlim = { RLIM_INFINITY, RLIM_INFINITY };
+    if (setrlimit(RLIMIT_MEMLOCK, &memlock_rlim) != 0) {
+        if (getrlimit(RLIMIT_MEMLOCK, &memlock_rlim) == 0 &&
+            memlock_rlim.rlim_cur < memlock_rlim.rlim_max) {
+            memlock_rlim.rlim_cur = memlock_rlim.rlim_max;
+            (void)setrlimit(RLIMIT_MEMLOCK, &memlock_rlim);
+        }
     }
 
     /* Lock all current and future memory to prevent swapping secrets (post-fork daemon context).
@@ -1083,7 +1096,8 @@ int main(int argc, char *argv[]) {
         mlockall_active = 1;
     } else {
         mlockall_active = 0;
-        fprintf(stderr, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.\n", strerror(errno));
+        syslog(LOG_WARNING, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.",
+               strerror(errno));
     }
 
     if (drop_privileges() != 0) {
@@ -1124,6 +1138,7 @@ err_unmount:
         manage_audit_rules(global_opts.source_dir, getpid(), 0);
         shutdown_audit_system();
     }
+    closelog();
     fuse_session_unmount(se);
 err_signal:
     fuse_remove_signal_handlers(se);
