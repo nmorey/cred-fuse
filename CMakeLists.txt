@@ -61,7 +61,7 @@ target_link_libraries(cred-decrypt PRIVATE
 install(TARGETS mount.cred-fuse DESTINATION sbin)
 install(TARGETS cred-encrypt cred-decrypt DESTINATION bin)
 
-option(BUILD_TESTING "Build the testing tree and enable swtpm TCTI support" ON)
+option(BUILD_TESTING "Build the testing tree and enable swtpm TCTI support" OFF)
 
 if(BUILD_TESTING)
     enable_testing()

@@ -34,10 +34,6 @@ BuildRequires:  pkgconfig(tss2-mu)
 BuildRequires:  pkgconfig(tss2-rc)
 BuildRequires:  pkgconfig(tss2-tctildr)
 BuildRequires:  audit-devel
-# For testing
-BuildRequires:  tpm2.0-tools
-BuildRequires:  swtpm
-BuildRequires:  python3-base
 Requires:       fuse3
 Requires:       tpm2.0-abrmd
 
@@ -57,9 +53,6 @@ POSIX DAC access controls and cryptographic metadata binding.
 
 %install
 %cmake_install
-
-%check
-%ctest
 
 %files
 %license LICENSE

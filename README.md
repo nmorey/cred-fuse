@@ -134,7 +134,9 @@ cred-fuse#/etc/credstore.encrypted /credentials fuse ro,allow_other,default_perm
 
 ## Testing
 
-The test suite spins up an isolated software TPM (`swtpm`) over a local UNIX socket and exercises `cred-encrypt`, `cred-decrypt`, and `mount.cred-fuse` across 14 test suites:
+The test suite spins up an isolated software TPM (`swtpm`) over a local UNIX socket and exercises `cred-encrypt`, `cred-decrypt`, and `mount.cred-fuse` across 14 test suites (requires configuring with `-DBUILD_TESTING=ON`):
 ```bash
+cmake -B build -DBUILD_TESTING=ON
+cmake --build build
 ctest --test-dir build --output-on-failure
 ```
