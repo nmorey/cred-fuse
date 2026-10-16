@@ -110,6 +110,7 @@ static inline uint16_t uid_to_slot(uid_t uid) {
 }
 
 static int audit_fd = -1;
+static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void init_audit_system(void) {
     audit_fd = audit_open();
@@ -201,7 +202,10 @@ static int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add)
 }
 
 static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_ino_t ino, const char *filename) {
-    if (err > 0 && audit_fd >= 0) {
+    int skip_audit = (err == ENOENT && op != NULL &&
+                      (strcmp(op, "lookup") == 0 || strcmp(op, "getattr") == 0));
+
+    if (err > 0 && audit_fd >= 0 && !skip_audit) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
         char *path = NULL;
 
@@ -214,26 +218,36 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
             mount_prefix = "";
         }
 
-        char msg[1024];
-	char errno_str[256];
-
-	strerror_r(err, errno_str, sizeof(errno_str));
-        int ret = snprintf(msg, sizeof(msg),
-                 "op=%s path=\"%s%s%s%s\" uid=%u gid=%u pid=%d res=failed error=\"%s\"",
-                 op,
+        char full_audit_path[PATH_MAX];
+        snprintf(full_audit_path, sizeof(full_audit_path), "%s%s%s%s",
                  mount_prefix,
                  path ? path : "",
                  (path && filename) ? "/" : "",
-                 filename ? filename : "",
+                 filename ? filename : "");
+
+        char *encoded_path = audit_encode_nv_string("path", full_audit_path, 0);
+
+        char msg[1024];
+        char errno_str[256];
+
+        strerror_r(err, errno_str, sizeof(errno_str));
+        int ret = snprintf(msg, sizeof(msg),
+                 "op=%s %s uid=%u gid=%u pid=%d res=failed error=\"%s\"",
+                 op,
+                 encoded_path ? encoded_path : "path=?",
                  ctx->uid, ctx->gid, ctx->pid,
                  errno_str);
+        free(encoded_path);
         if (ret >= (int)sizeof(msg)) {
             syslog(LOG_WARNING, "reply_err_and_audit: audit message truncated");
         }
 
+        pthread_mutex_lock(&audit_lock);
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 0);
+        int saved_errno = errno;
+        pthread_mutex_unlock(&audit_lock);
         if (rc < 0) {
-            syslog(LOG_WARNING, "reply_err_and_audit: audit_log_user_message failed: %s", strerror(errno));
+            syslog(LOG_WARNING, "reply_err_and_audit: audit_log_user_message failed: %s", strerror(saved_errno));
         }
 
         if (path) {
@@ -402,16 +416,25 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
             mount_prefix = "";
         }
 
+        char full_audit_path[PATH_MAX];
+        snprintf(full_audit_path, sizeof(full_audit_path), "%s%s", mount_prefix, path);
+        char *encoded_path = audit_encode_nv_string("path", full_audit_path, 0);
+
         char msg[1024];
         int ret = snprintf(msg, sizeof(msg),
-                 "op=open path=\"%s%s\" uid=%u gid=%u pid=%d res=success",
-                 mount_prefix, path, ctx->uid, ctx->gid, ctx->pid);
+                 "op=open %s uid=%u gid=%u pid=%d res=success",
+                 encoded_path ? encoded_path : "path=?",
+                 ctx->uid, ctx->gid, ctx->pid);
+        free(encoded_path);
         if (ret >= (int)sizeof(msg)) {
             syslog(LOG_WARNING, "cred_ll_open: audit message truncated");
         }
+        pthread_mutex_lock(&audit_lock);
         int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 1);
+        int saved_errno = errno;
+        pthread_mutex_unlock(&audit_lock);
         if (rc < 0) {
-            syslog(LOG_WARNING, "cred_ll_open: audit_log_user_message failed: %s", strerror(errno));
+            syslog(LOG_WARNING, "cred_ll_open: audit_log_user_message failed: %s", strerror(saved_errno));
         }
     }
 
