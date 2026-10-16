@@ -37,6 +37,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <pthread.h>
+#include <poll.h>
 #include <libaudit.h>
 #include <limits.h>
 #include <syslog.h>
@@ -126,6 +127,8 @@ static void shutdown_audit_system(void) {
     }
 }
 
+#define CRED_FUSE_AUDIT_KEY "cred-fuse-bypass"
+
 static struct audit_rule_data *build_base_rule(const char *source_dir) {
     struct audit_rule_data *rule = audit_rule_create_data();
     if (!rule) {
@@ -133,13 +136,6 @@ static struct audit_rule_data *build_base_rule(const char *source_dir) {
     }
 
     if (audit_rule_syscallbyname_data(rule, "all") < 0) {
-        audit_rule_free_data(rule);
-        return NULL;
-    }
-
-    char arch_filter[32];
-    snprintf(arch_filter, sizeof(arch_filter), "arch=b64");
-    if (audit_rule_fieldpair_data(&rule, arch_filter, AUDIT_FILTER_EXIT) < 0) {
         audit_rule_free_data(rule);
         return NULL;
     }
@@ -158,12 +154,111 @@ static struct audit_rule_data *build_base_rule(const char *source_dir) {
         return NULL;
     }
 
+    char key_filter[64];
+    snprintf(key_filter, sizeof(key_filter), "key=%s", CRED_FUSE_AUDIT_KEY);
+    if (audit_rule_fieldpair_data(&rule, key_filter, AUDIT_FILTER_EXIT) < 0) {
+        audit_rule_free_data(rule);
+        return NULL;
+    }
+
     return rule;
+}
+
+static void purge_stale_audit_rules(const char *source_dir) {
+    if (audit_fd < 0 || !source_dir) {
+        return;
+    }
+
+    if (audit_request_rules_list_data(audit_fd) <= 0) {
+        return;
+    }
+
+    struct audit_rule_data *to_delete[64];
+    size_t del_count = 0;
+    size_t dir_len = strlen(source_dir);
+    size_t key_len = strlen(CRED_FUSE_AUDIT_KEY);
+
+    for (int iter = 0; iter < 4096; iter++) {
+        struct pollfd pfd = { .fd = audit_fd, .events = POLLIN };
+        if (poll(&pfd, 1, 200) <= 0) {
+            break;
+        }
+
+        struct audit_reply rep;
+        int rc = audit_get_reply(audit_fd, &rep, GET_REPLY_NONBLOCKING, 0);
+        if (rc <= 0) {
+            break;
+        }
+
+        if (rep.type == NLMSG_DONE || rep.type == NLMSG_ERROR) {
+            break;
+        }
+
+        if (rep.type != AUDIT_LIST_RULES || !rep.ruledata) {
+            continue;
+        }
+
+        const struct audit_rule_data *r = rep.ruledata;
+        if ((r->flags & AUDIT_FILTER_MASK) != AUDIT_FILTER_EXIT) {
+            continue;
+        }
+
+        int dir_matches = 0;
+        int key_matches = 0;
+        int has_pid = 0;
+        uint32_t buf_off = 0;
+
+        for (uint32_t i = 0; i < r->field_count && i < AUDIT_MAX_FIELDS; i++) {
+            uint32_t ftype = r->fields[i] & ~AUDIT_OPERATORS;
+            uint32_t fval = r->values[i];
+
+            int is_str = (ftype == AUDIT_DIR || ftype == AUDIT_WATCH ||
+                          ftype == AUDIT_FILTERKEY || ftype == AUDIT_EXE ||
+                          (ftype >= AUDIT_SUBJ_USER && ftype <= AUDIT_SUBJ_CLR) ||
+                          (ftype >= AUDIT_OBJ_USER && ftype <= AUDIT_OBJ_LEV_HIGH));
+            if (is_str) {
+                if (fval > r->buflen || buf_off > r->buflen - fval) {
+                    break;
+                }
+                if (ftype == AUDIT_DIR && fval == dir_len &&
+                    memcmp(r->buf + buf_off, source_dir, dir_len) == 0) {
+                    dir_matches = 1;
+                } else if (ftype == AUDIT_FILTERKEY && fval == key_len &&
+                           memcmp(r->buf + buf_off, CRED_FUSE_AUDIT_KEY, key_len) == 0) {
+                    key_matches = 1;
+                }
+                buf_off += fval;
+            } else if (ftype == AUDIT_PID) {
+                has_pid = 1;
+            }
+        }
+
+        if (dir_matches && (key_matches || (r->action == AUDIT_NEVER && has_pid)) &&
+            del_count < (sizeof(to_delete) / sizeof(to_delete[0]))) {
+            size_t rule_sz = sizeof(*r) + r->buflen;
+            struct audit_rule_data *copy = malloc(rule_sz);
+            if (copy) {
+                memcpy(copy, r, rule_sz);
+                to_delete[del_count++] = copy;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < del_count; i++) {
+        (void)audit_delete_rule_data(audit_fd, to_delete[i],
+                                     to_delete[i]->flags & AUDIT_FILTER_MASK,
+                                     to_delete[i]->action);
+        free(to_delete[i]);
+    }
 }
 
 static int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add) {
     if (audit_fd < 0) {
         return -1;
+    }
+
+    if (add) {
+        purge_stale_audit_rules(source_dir);
     }
 
     int rc_exclude = 0;
@@ -186,14 +281,10 @@ static int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add)
 
     struct audit_rule_data *rule_watch = build_base_rule(source_dir);
     if (rule_watch) {
-        char key_filter[64];
-        snprintf(key_filter, sizeof(key_filter), "key=cred-fuse-bypass");
-        if (audit_rule_fieldpair_data(&rule_watch, key_filter, AUDIT_FILTER_EXIT) == 0) {
-            if (add) {
-                rc_watch = audit_add_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
-            } else {
-                rc_watch = audit_delete_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
-            }
+        if (add) {
+            rc_watch = audit_add_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
+        } else {
+            rc_watch = audit_delete_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
         }
         audit_rule_free_data(rule_watch);
     }
