@@ -17,9 +17,9 @@
 
 %define         git_ver %{nil}
 Name:           cred-fuse
-Version:        1.0
+Version:        2.0
 Release:        0
-Summary:        FUSE driver for TPM-encrypted credentials
+Summary:        FUSE driver and CLI tools for TPM-encrypted credentials
 License:        GPL-2.0-only
 Group:          System/Filesystems
 URL:            https://github.com/nmorey/cred-fuse
@@ -30,22 +30,23 @@ BuildRequires:  pkgconfig
 BuildRequires:  pkgconfig(fuse3)
 BuildRequires:  pkgconfig(libcrypto)
 BuildRequires:  pkgconfig(tss2-esys)
+BuildRequires:  pkgconfig(tss2-mu)
+BuildRequires:  pkgconfig(tss2-rc)
 BuildRequires:  pkgconfig(tss2-tctildr)
-BuildRequires:  hostname
 BuildRequires:  audit-devel
 # For testing
 BuildRequires:  tpm2.0-tools
 BuildRequires:  swtpm
-BuildRequires:  attr
-BuildRequires:  python3-cryptography
+BuildRequires:  python3-base
 Requires:       fuse3
 Requires:       tpm2.0-abrmd
-Requires:       hostname
 
 %description
-cred-fuse is a FUSE filesystem that securely decrypts and exposes TPM-encrypted
-credentials (RSA or AES+TPM) dynamically from a source directory, inheriting
-POSIX DAC access controls.
+cred-fuse is a read-only FUSE filesystem and accompanying CLI toolset
+(cred-encrypt, cred-decrypt) that dynamically decrypts and exposes
+TPM-bound hybrid envelope (CRED_ENV v1: RSA-OAEP-SHA256 + HKDF-SHA256 +
+AES-256-GCM) credentials from an encrypted backing store while enforcing
+POSIX DAC access controls and cryptographic metadata binding.
 
 %prep
 %setup -q -n  %{name}-%{version}%{?git_ver}
@@ -64,5 +65,7 @@ POSIX DAC access controls.
 %license LICENSE
 %doc README.md
 %{_sbindir}/mount.cred-fuse
+%{_bindir}/cred-encrypt
+%{_bindir}/cred-decrypt
 
 %changelog

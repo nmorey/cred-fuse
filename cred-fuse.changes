@@ -1,4 +1,24 @@
 -------------------------------------------------------------------
+Fri Oct 16 07:45:00 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
+
+- Release 2.0
+  - Switch to unified CRED_ENV v1 hybrid envelope encryption
+    (RSA-OAEP-SHA256 + HKDF-SHA256 + AES-256-GCM) with per-file random
+    keys and eliminate the shared <hostname>.key file
+  - Bind the CRED_ENV v1 header, relative FUSE path, and POSIX file
+    permissions (st_mode & 07777) into AES-256-GCM Additional
+    Authenticated Data (AAD) to prevent ciphertext substitution and
+    chmod tampering
+  - Derive plaintext file size directly from the CRED_ENV v1 header and
+    drop the user.size extended attribute requirement
+  - Add cred-encrypt and cred-decrypt CLI utilities
+  - Verify TPM public key attributes, pin the TPM object Name across
+    decryptions, and add the tpm_pubkey mount option
+  - Harden TCTI validation: scrub TSS2/TCTI environment variables,
+    require /dev/tpmrm[0-9]+ for device TCTI, and restrict swtpm TCTI
+    to test builds
+
+-------------------------------------------------------------------
 Fri Aug 21 07:51:37 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
 
 - Release 1.0
