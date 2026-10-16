@@ -15,19 +15,17 @@ rm -rf "${WORKDIR}/source"/*
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 
 # perms.enc: 400
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/perms.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+"${BINARY_DIR}/cred-encrypt" -k "${WORKDIR}/tpm_pub.pem" -p "perms.enc" -m 0400 -i "${WORKDIR}/valid.txt" -o "${WORKDIR}/source/perms.enc"
 setfattr -n user.size -v c "${WORKDIR}/source/perms.enc"
-chmod 400 "${WORKDIR}/source/perms.enc"
+chmod 0400 "${WORKDIR}/source/perms.enc"
 
 # valid.enc: 644
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/valid.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
 setfattr -n user.size -v c "${WORKDIR}/source/valid.enc"
-chmod 644 "${WORKDIR}/source/valid.enc"
 
 # write_perms.enc: 777
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/write_perms.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/write_perms.enc" 0777
 setfattr -n user.size -v c "${WORKDIR}/source/write_perms.enc"
-chmod 777 "${WORKDIR}/source/write_perms.enc"
 
 rm -f "${WORKDIR}/valid.txt"
 

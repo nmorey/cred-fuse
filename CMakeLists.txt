@@ -34,13 +34,40 @@ target_link_libraries(mount.cred-fuse PRIVATE
     ${LIBAUDIT_LIBRARIES}
 )
 
+add_executable(cred-encrypt src/cred_encrypt.c src/decryption.c)
+
+target_include_directories(cred-encrypt PRIVATE
+    ${OPENSSL_INCLUDE_DIR}
+    ${TSS2_INCLUDE_DIRS}
+)
+
+target_link_libraries(cred-encrypt PRIVATE
+    OpenSSL::Crypto
+    ${TSS2_LIBRARIES}
+)
+
+add_executable(cred-decrypt src/cred_decrypt.c src/decryption.c)
+
+target_include_directories(cred-decrypt PRIVATE
+    ${OPENSSL_INCLUDE_DIR}
+    ${TSS2_INCLUDE_DIRS}
+)
+
+target_link_libraries(cred-decrypt PRIVATE
+    OpenSSL::Crypto
+    ${TSS2_LIBRARIES}
+)
+
 install(TARGETS mount.cred-fuse DESTINATION sbin)
+install(TARGETS cred-encrypt cred-decrypt DESTINATION bin)
 
 option(BUILD_TESTING "Build the testing tree and enable swtpm TCTI support" ON)
 
 if(BUILD_TESTING)
     enable_testing()
     target_compile_definitions(mount.cred-fuse PRIVATE CRED_FUSE_ENABLE_SWTPM=1)
+    target_compile_definitions(cred-encrypt PRIVATE CRED_FUSE_ENABLE_SWTPM=1)
+    target_compile_definitions(cred-decrypt PRIVATE CRED_FUSE_ENABLE_SWTPM=1)
 
     add_test(NAME test_setup COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup.sh ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(test_setup PROPERTIES FIXTURES_SETUP tpm_fuse_fixture)

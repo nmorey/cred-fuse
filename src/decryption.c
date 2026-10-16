@@ -15,7 +15,6 @@
  */
 
 #include "decryption.h"
-#include "path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +24,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
+#include <endian.h>
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -33,6 +33,7 @@
 #include <openssl/pem.h>
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
+#include <openssl/param_build.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <syslog.h>
@@ -41,21 +42,6 @@
 #include <tss2/tss2_tctildr.h>
 #include <tss2/tss2_rc.h>
 #include <tss2/tss2_mu.h>
-
-#define AES_HEADER "Salted__"
-#define AES_HEADER_LEN 8
-#define TPM2_RSA2048_KEY_BYTES 256
-#define TPM2_RSA4096_KEY_BYTES 512
-
-struct cached_host_key {
-    char path[PATH_MAX];
-    dev_t dev;
-    ino_t ino;
-    uint8_t enc[512];
-    size_t enc_len;
-};
-
-static struct cached_host_key host_key = {0};
 
 struct pinned_tpm_key {
     pthread_mutex_t lock;
@@ -84,7 +70,7 @@ static inline size_t get_aligned_size(size_t size) {
     return ((size + page_size - 1) / page_size) * page_size;
 }
 
-static void *malloc_mlock(size_t size)
+void *malloc_mlock(size_t size)
 {
     void *ptr = NULL;
     if (!mlockall_active) {
@@ -111,7 +97,7 @@ static void *malloc_mlock(size_t size)
     return ptr;
 }
 
-static void free_munlock(void *ptr, size_t size)
+void free_munlock(void *ptr, size_t size)
 {
     if (!ptr)
 	return;
@@ -133,48 +119,236 @@ void clean_decrypted_node(struct decrypted_node *node)
     memset(node, 0, sizeof(*node));
 }
 
-int is_host_key_inode(dev_t dev, ino_t ino) {
-    return host_key.ino != 0 &&
-           host_key.ino == ino &&
-           host_key.dev == dev;
+int validate_tcti(const char *tcti) {
+    if (!tcti) {
+        return 1;
+    }
+
+    const char *allowed_schemes[] = {
+        "device",
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        "swtpm",
+#endif
+        "tabrmd"
+    };
+    size_t allowed_count = sizeof(allowed_schemes) / sizeof(allowed_schemes[0]);
+
+    const char *colon = strchr(tcti, ':');
+    size_t scheme_len = colon ? (size_t)(colon - tcti) : strlen(tcti);
+
+    // 1. Validate Scheme
+    int scheme_found = 0;
+    const char *scheme = NULL;
+    for (size_t i = 0; i < allowed_count; i++) {
+        if (scheme_len == strlen(allowed_schemes[i]) && strncmp(tcti, allowed_schemes[i], scheme_len) == 0) {
+            scheme_found = 1;
+            scheme = allowed_schemes[i];
+            break;
+        }
+    }
+    if (!scheme_found) {
+        return 0; // Unknown or forbidden scheme (e.g., mssim, none)
+    }
+
+    // Bare scheme without ':options' (e.g., "tabrmd", "device", "swtpm")
+    if (!colon) {
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        if (strcmp(scheme, "swtpm") == 0) {
+            return 0; // Bare "swtpm" defaults to TCP; require "swtpm:path=/..."
+        }
+#endif
+        if (strcmp(scheme, "device") == 0) {
+            return 0; // Bare "device" can fall back to /dev/tpm0; require "device:/dev/tpmrm..."
+        }
+        return 1; // Bare "tabrmd" is valid
+    }
+
+    const char *options = colon + 1;
+    if (*options == '\0') {
+        return 0; // Empty options trailing a colon is invalid
+    }
+
+    // 2. Validate Options based on Scheme
+    if (strcmp(scheme, "device") == 0) {
+        // Must use the in-kernel TPM resource manager: e.g. /dev/tpmrm0
+        if (strncmp(options, "/dev/tpmrm", 10) != 0 || options[10] == '\0') {
+            return 0;
+        }
+        for (size_t i = 10; options[i] != '\0'; i++) {
+            char c = options[i];
+            if (!(c >= '0' && c <= '9')) {
+                return 0; // Block raw /dev/tpm0, path traversal, or non-digits
+            }
+        }
+#ifdef CRED_FUSE_ENABLE_SWTPM
+    } else if (strcmp(scheme, "swtpm") == 0) {
+        // Swtpm requires path=/absolute/path/to/socket
+        if (strncmp(options, "path=", 5) != 0) {
+            return 0;
+        }
+        const char *path = options + 5;
+        if (path[0] != '/' || path[1] == '\0') {
+            return 0; // Must be a non-root absolute path
+        }
+        if (strstr(path, "..") != NULL) {
+            return 0; // Block path traversal sequences
+        }
+        for (size_t i = 0; path[i] != '\0'; i++) {
+            char c = path[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '/' || c == '.' || c == '-' || c == '_')) {
+                return 0; // Block commands, wildcard shells, etc.
+            }
+        }
+#endif
+    } else if (strcmp(scheme, "tabrmd") == 0) {
+        // Tabrmd allows bus_name and bus_type (alphanumeric, =, ,, -, _, .)
+        for (size_t i = 0; options[i] != '\0'; i++) {
+            char c = options[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '=' || c == ',' || c == '-' || c == '_' || c == '.')) {
+                return 0;
+            }
+        }
+    }
+
+    return 1;
 }
 
-static int load_tpm_pubkey_file(const char *path) {
+int parse_octal_mode(const char *mode_str, mode_t *mode_out) {
+    if (!mode_str || *mode_str == '\0' || !mode_out) {
+        return -EINVAL;
+    }
+    size_t len = strlen(mode_str);
+    if (len > 6) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (mode_str[i] < '0' || mode_str[i] > '7') {
+            return -EINVAL;
+        }
+    }
+    char *endptr = NULL;
+    errno = 0;
+    unsigned long val = strtoul(mode_str, &endptr, 8);
+    if (errno != 0 || !endptr || *endptr != '\0' || val > 07777UL) {
+        return -EINVAL;
+    }
+    *mode_out = (mode_t)val;
+    return 0;
+}
+
+int format_credential_aad(char *buf, size_t buf_sz, const char *rel_path, mode_t mode) {
+    if (!buf || buf_sz == 0 || !rel_path) {
+        return -EINVAL;
+    }
+
+    while (*rel_path == '/') {
+        rel_path++;
+    }
+    if (*rel_path == '\0') {
+        return -EINVAL;
+    }
+
+    const char *p = rel_path;
+    while (*p) {
+        if (*p == '/') {
+            return -EINVAL; // Reject consecutive slashes
+        }
+        const char *end = p;
+        while (*end && *end != '/') {
+            end++;
+        }
+        size_t comp_len = (size_t)(end - p);
+        if ((comp_len == 1 && p[0] == '.') ||
+            (comp_len == 2 && p[0] == '.' && p[1] == '.')) {
+            return -EINVAL;
+        }
+        for (size_t i = 0; i < comp_len; i++) {
+            char c = p[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-')) {
+                return -EINVAL;
+            }
+        }
+        if (*end == '/') {
+            if (*(end + 1) == '\0') {
+                return -EINVAL; // Reject trailing slash
+            }
+            p = end + 1;
+        } else {
+            p = end;
+        }
+    }
+
+    int ret = snprintf(buf, buf_sz, "%s:%04o", rel_path, (unsigned int)(mode & 07777));
+    if (ret < 0 || (size_t)ret >= buf_sz) {
+        return -ENAMETOOLONG;
+    }
+    return 0;
+}
+
+int compute_oaep_label(const char *aad, uint8_t label_buf[33]) {
+    if (!aad || aad[0] == '\0' || !label_buf) {
+        return -EINVAL;
+    }
+
+    uint8_t digest[32];
+    unsigned int digest_len = 0;
+    if (EVP_Digest(aad, strlen(aad), digest, &digest_len, EVP_sha256(), NULL) != 1 || digest_len != 32) {
+        return -EIO;
+    }
+
+    static const char hex_chars[] = "0123456789abcdef";
+    for (size_t i = 0; i < 16; i++) {
+        label_buf[i * 2] = (uint8_t)hex_chars[(digest[i] >> 4) & 0x0f];
+        label_buf[i * 2 + 1] = (uint8_t)hex_chars[digest[i] & 0x0f];
+    }
+    label_buf[32] = '\0';
+
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return 0;
+}
+
+EVP_PKEY *load_rsa_pubkey_evp(const char *path, int require_secure_perms,
+                              size_t *modulus_len_out, uint8_t modulus_out[TPM2_RSA4096_KEY_BYTES]) {
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
-        syslog(LOG_ERR, "load_tpm_pubkey_file: Failed to open %s: %s", path, strerror(errno));
-        fprintf(stderr, "Error: Failed to open tpm_pubkey %s: %s\n", path, strerror(errno));
-        return -1;
+        syslog(LOG_ERR, "load_rsa_pubkey_evp: Failed to open %s: %s", path, strerror(errno));
+        fprintf(stderr, "Error: Failed to open public key %s: %s\n", path, strerror(errno));
+        return NULL;
     }
 
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        syslog(LOG_ERR, "load_tpm_pubkey_file: %s is not a regular file", path);
-        fprintf(stderr, "Error: tpm_pubkey %s must be a regular file.\n", path);
+        syslog(LOG_ERR, "load_rsa_pubkey_evp: %s is not a regular file", path);
+        fprintf(stderr, "Error: Public key %s must be a regular file.\n", path);
         close(fd);
-        return -1;
+        return NULL;
     }
 
-    if ((st.st_uid != 0 && st.st_uid != geteuid()) ||
-        (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-        syslog(LOG_ERR, "load_tpm_pubkey_file: %s has insecure ownership or write permissions (uid=%u, mode=%04o)",
-               path, st.st_uid, (unsigned int)(st.st_mode & 07777));
-        fprintf(stderr, "Error: tpm_pubkey %s must be owned by root and not writable by group or others.\n", path);
-        close(fd);
-        return -1;
+    if (require_secure_perms) {
+        if ((st.st_uid != 0 && st.st_uid != geteuid()) ||
+            (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            syslog(LOG_ERR, "load_rsa_pubkey_evp: %s has insecure ownership or write permissions (uid=%u, mode=%04o)",
+                   path, st.st_uid, (unsigned int)(st.st_mode & 07777));
+            fprintf(stderr, "Error: tpm_pubkey %s must be owned by root and not writable by group or others.\n", path);
+            close(fd);
+            return NULL;
+        }
     }
 
     if (st.st_size <= 0 || st.st_size > 8192) {
-        syslog(LOG_ERR, "load_tpm_pubkey_file: Invalid file size for %s", path);
-        fprintf(stderr, "Error: Invalid file size for tpm_pubkey %s.\n", path);
+        syslog(LOG_ERR, "load_rsa_pubkey_evp: Invalid file size for %s", path);
+        fprintf(stderr, "Error: Invalid file size for public key %s.\n", path);
         close(fd);
-        return -1;
+        return NULL;
     }
 
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
         close(fd);
-        return -1;
+        return NULL;
     }
 
     uint8_t buf[8192];
@@ -186,11 +360,11 @@ static int load_tpm_pubkey_file(const char *path) {
                 continue;
             }
             close(fd);
-            return -1;
+            return NULL;
         }
         if (rd == 0) {
             close(fd);
-            return -1;
+            return NULL;
         }
         bytes_read += (size_t)rd;
     }
@@ -203,21 +377,25 @@ static int load_tpm_pubkey_file(const char *path) {
         BIO_free(bio);
         if (pkey) {
             BIGNUM *bn_n = NULL;
-            if (EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &bn_n) == 1 && bn_n) {
+            if (EVP_PKEY_is_a(pkey, "RSA") &&
+                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &bn_n) == 1 && bn_n) {
                 int num_bytes = BN_num_bytes(bn_n);
                 if (num_bytes == TPM2_RSA2048_KEY_BYTES || num_bytes == TPM2_RSA4096_KEY_BYTES) {
-                    BN_bn2bin(bn_n, pinned_key.modulus);
-                    pinned_key.modulus_len = (size_t)num_bytes;
+                    if (modulus_out) {
+                        BN_bn2bin(bn_n, modulus_out);
+                    }
+                    if (modulus_len_out) {
+                        *modulus_len_out = (size_t)num_bytes;
+                    }
                     BN_free(bn_n);
-                    EVP_PKEY_free(pkey);
-                    return 0;
+                    return pkey;
                 }
                 BN_free(bn_n);
             }
             EVP_PKEY_free(pkey);
             ERR_clear_error();
-            fprintf(stderr, "Error: PEM tpm_pubkey %s is not a valid 2048/4096-bit RSA key.\n", path);
-            return -1;
+            fprintf(stderr, "Error: PEM public key %s is not a valid 2048/4096-bit RSA key.\n", path);
+            return NULL;
         }
         ERR_clear_error();
     }
@@ -230,15 +408,51 @@ static int load_tpm_pubkey_file(const char *path) {
         if (pub.publicArea.type == TPM2_ALG_RSA &&
             (pub.publicArea.unique.rsa.size == TPM2_RSA2048_KEY_BYTES ||
              pub.publicArea.unique.rsa.size == TPM2_RSA4096_KEY_BYTES)) {
-            memcpy(pinned_key.modulus, pub.publicArea.unique.rsa.buffer, pub.publicArea.unique.rsa.size);
-            pinned_key.modulus_len = pub.publicArea.unique.rsa.size;
-            return 0;
+            uint32_t exp = pub.publicArea.parameters.rsaDetail.exponent;
+            if (exp == 0) {
+                exp = 65537;
+            }
+            BIGNUM *bn_n = BN_bin2bn(pub.publicArea.unique.rsa.buffer, pub.publicArea.unique.rsa.size, NULL);
+            BIGNUM *bn_e = BN_new();
+            if (bn_n && bn_e && BN_set_word(bn_e, exp) == 1) {
+                OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
+                if (bld) {
+                    if (OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_RSA_N, bn_n) == 1 &&
+                        OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_RSA_E, bn_e) == 1) {
+                        OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(bld);
+                        if (params) {
+                            EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL);
+                            EVP_PKEY *pkey = NULL;
+                            if (pctx && EVP_PKEY_fromdata_init(pctx) == 1 &&
+                                EVP_PKEY_fromdata(pctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) == 1 && pkey) {
+                                EVP_PKEY_CTX_free(pctx);
+                                OSSL_PARAM_free(params);
+                                OSSL_PARAM_BLD_free(bld);
+                                BN_free(bn_n);
+                                BN_free(bn_e);
+                                if (modulus_out) {
+                                    memcpy(modulus_out, pub.publicArea.unique.rsa.buffer, pub.publicArea.unique.rsa.size);
+                                }
+                                if (modulus_len_out) {
+                                    *modulus_len_out = pub.publicArea.unique.rsa.size;
+                                }
+                                return pkey;
+                            }
+                            EVP_PKEY_CTX_free(pctx);
+                            OSSL_PARAM_free(params);
+                        }
+                    }
+                    OSSL_PARAM_BLD_free(bld);
+                }
+            }
+            BN_free(bn_n);
+            BN_free(bn_e);
         }
     }
 
-    syslog(LOG_ERR, "load_tpm_pubkey_file: %s is neither a valid RSA PEM nor TPM2B_PUBLIC file", path);
-    fprintf(stderr, "Error: tpm_pubkey %s is neither a valid RSA PEM nor TPM2B_PUBLIC file.\n", path);
-    return -1;
+    syslog(LOG_ERR, "load_rsa_pubkey_evp: %s is neither a valid RSA PEM nor TPM2B_PUBLIC file", path);
+    fprintf(stderr, "Error: Public key %s is neither a valid RSA PEM nor TPM2B_PUBLIC file.\n", path);
+    return NULL;
 }
 
 static int verify_and_pin_tpm_key(ESYS_CONTEXT *esys_ctx, ESYS_TR key_handle) {
@@ -336,14 +550,9 @@ out:
     return ret;
 }
 
-int init_decryption(const char *source_dir) {
-    char hostname[256] = {0};
-    char *dot;
-    int ret;
-    int fd;
+int init_decryption(void) {
     long p_sz;
 
-    memset(&host_key, 0, sizeof(host_key));
     pinned_key.modulus_len = 0;
     memset(&pinned_key.name, 0, sizeof(pinned_key.name));
 
@@ -353,87 +562,12 @@ int init_decryption(const char *source_dir) {
     }
 
     if (global_opts.tpm_pubkey) {
-        if (load_tpm_pubkey_file(global_opts.tpm_pubkey) != 0) {
+        EVP_PKEY *pkey = load_rsa_pubkey_evp(global_opts.tpm_pubkey, 1,
+                                             &pinned_key.modulus_len, pinned_key.modulus);
+        if (!pkey) {
             return -1;
         }
-    }
-
-    if (gethostname(hostname, sizeof(hostname)-1) != 0) {
-        return -1;
-    }
-    // Make sure hostname is NULL terminated
-    hostname[sizeof(hostname) - 1] = '\0';
-
-    // Validate hostname to allow only alphanumeric, '.', and '-'
-    if (hostname[0] == '\0') {
-        return -1;
-    }
-    for (int i = 0; hostname[i] != '\0'; i++) {
-        char c = hostname[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.')) {
-            return -1;
-        }
-    }
-    dot = strchr(hostname, '.');
-    if (dot)
-	*dot = '\0';
-
-    if (hostname[0] == '\0') {
-        return -1;
-    }
-
-    ret = snprintf(host_key.path, sizeof(host_key.path), "%s/%s.key", source_dir, hostname);
-    if (ret < 0 || (size_t)ret >= sizeof(host_key.path)) {
-        return -1;
-    }
-
-    // Open and validate the encrypted host key file using open_and_validate_path
-    struct stat st;
-    fd = open_and_validate_path(host_key.path, &st);
-    if (fd >= 0) {
-        struct stat real_st;
-        if (fstat(fd, &real_st) == 0) {
-            if ((real_st.st_uid != 0 && real_st.st_uid != geteuid()) ||
-                (real_st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
-                syslog(LOG_ERR, "init_decryption: Host key %s has insecure ownership or permissions (uid=%u, mode=%04o)",
-                       host_key.path, real_st.st_uid, (unsigned int)(real_st.st_mode & 07777));
-                fprintf(stderr, "Error: Host key %s must be owned by root and not accessible by group or others.\n",
-                        host_key.path);
-                close(fd);
-                return -1;
-            }
-            if (real_st.st_size > 0 && real_st.st_size <= (off_t)sizeof(host_key.enc)) {
-                size_t bytes_read = 0;
-                while (bytes_read < (size_t)real_st.st_size) {
-                    ssize_t rd = pread(fd, host_key.enc + bytes_read,
-                                       (size_t)real_st.st_size - bytes_read, (off_t)bytes_read);
-                    if (rd < 0) {
-                        if (errno == EINTR) {
-                            continue;
-                        }
-                        close(fd);
-                        return -1;
-                    }
-                    if (rd == 0) {
-                        close(fd);
-                        return -1;
-                    }
-                    bytes_read += (size_t)rd;
-                }
-                host_key.enc_len = bytes_read;
-                host_key.dev = real_st.st_dev;
-                host_key.ino = real_st.st_ino;
-            } else {
-                close(fd);
-                return -1;
-            }
-        } else {
-            close(fd);
-            return -1;
-        }
-        close(fd);
-    } else if (fd != -ENOENT) {
-        return -1;
+        EVP_PKEY_free(pkey);
     }
 
     return 0;
@@ -486,7 +620,7 @@ int check_tpm_lockout(void) {
 
     if (cap_data) {
         TPML_TAGGED_TPM_PROPERTY *props = &cap_data->data.tpmProperties;
-        for (UINT32 i = 0; i < props->count; i++) {
+        for (uint32_t i = 0; i < props->count; i++) {
             if (props->tpmProperty[i].property == TPM2_PT_LOCKOUT_COUNTER) {
                 lockout_counter = props->tpmProperty[i].value;
             } else if (props->tpmProperty[i].property == TPM2_PT_MAX_AUTH_FAIL) {
@@ -524,7 +658,7 @@ out:
     return ret_err;
 }
 
-static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
+static int read_file_fd(int fd, uint8_t **buf, size_t *len, mode_t *mode_out, size_t max_size) {
     struct stat st;
     if (fstat(fd, &st) != 0) {
         return -errno;
@@ -565,6 +699,9 @@ static int read_file_fd(int fd, uint8_t **buf, size_t *len, size_t max_size) {
     }
 
     *len = bytes_read;
+    if (mode_out) {
+        *mode_out = st.st_mode & 07777;
+    }
     return 0;
 }
 
@@ -589,8 +726,9 @@ static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
 }
 
 static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
+			    const char *aad,
 			    struct decrypted_node *out) {
-    if (in_len < TPM2_RSA2048_KEY_BYTES || in_len > sizeof(((TPM2B_PUBLIC_KEY_RSA*)0)->buffer)) {
+    if (in_len != TPM2_RSA2048_KEY_BYTES && in_len != TPM2_RSA4096_KEY_BYTES) {
         return -EMSGSIZE;
     }
 
@@ -601,10 +739,15 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     ESYS_TR session_handle = ESYS_TR_NONE;
     TPM2B_PUBLIC_KEY_RSA cipher_text = {0};
     TPMT_RSA_DECRYPT inScheme = {0};
-    TPM2B_DATA label = { .size = 0 };
+    TPM2B_DATA label = { .size = 33 };
     TPM2B_PUBLIC_KEY_RSA *message = NULL;
     int ret_err = 0;
     int session_need_flush = 0;
+
+    ret_err = compute_oaep_label(aad, label.buffer);
+    if (ret_err != 0) {
+        return ret_err;
+    }
 
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
@@ -616,6 +759,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     rc = Tss2_TctiLdr_Initialize(global_opts.tcti, &tcti_ctx);
     if (rc != TSS2_RC_SUCCESS) {
         syslog(LOG_ERR, "tpm2_rsa_decrypt: Tss2_TctiLdr_Initialize failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
+        OPENSSL_cleanse(&label, sizeof(label));
 	return -ENODEV;
     }
 
@@ -666,7 +810,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 
     /*
      * Note: If mlockall() is not supported or fails, there is a minimal
-     * window here where the decrypted TPM message (the AES passphrase)
+     * window here where the decrypted TPM message (the ephemeral AES key)
      * resides in standard, unlocked heap memory. The libtss2-esys library
      * uses a direct calloc() which we cannot easily override.
      * We cleanse it immediately after copying, but we cannot completely
@@ -728,33 +872,37 @@ out_tcti:
     return ret_err;
 }
 
-static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
-			  const struct decrypted_node *passphrase,
+static int do_aes_decrypt(const uint8_t *iv,
+			  const uint8_t *tag,
+			  const uint8_t *ciphertext, size_t ciphertext_len,
+			  const char *aad,
+			  const struct decrypted_node *eph_key,
 			  struct decrypted_node *out) {
-    const uint8_t *iv;
-    const uint8_t *tag;
-    const uint8_t *ciphertext;
-    size_t ciphertext_len;
+    uint8_t tag_buf[16];
+    size_t aad_len;
     EVP_CIPHER_CTX *ctx;
     uint8_t *plain;
     size_t alloc_sz;
-    int len1 = 0, len2 = 0;
+    int aad_out_len = 0, len1 = 0, len2 = 0;
     int ret_err = -EIO;
 
-    if (in_len <= 36)
-        return -EINVAL;
-
-    if (memcmp(in_data, AES_HEADER, AES_HEADER_LEN) != 0)
-        return -EINVAL;
-
-    if (!passphrase || !passphrase->buf || passphrase->len != 32) {
+    if (!iv || !tag || (!ciphertext && ciphertext_len > 0)) {
         return -EINVAL;
     }
 
-    iv = in_data + 8;
-    tag = in_data + 20;
-    ciphertext = in_data + 36;
-    ciphertext_len = in_len - 36;
+    if (!eph_key || !eph_key->buf || eph_key->len != 32) {
+        return -EINVAL;
+    }
+
+    if (!aad || aad[0] == '\0') {
+        return -EINVAL;
+    }
+    aad_len = strlen(aad);
+    if (aad_len > INT_MAX) {
+        return -EINVAL;
+    }
+
+    memcpy(tag_buf, tag, sizeof(tag_buf));
 
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
@@ -771,13 +919,18 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
         goto decrypt_init_err;
     }
 
-    if (EVP_DecryptInit_ex(ctx, NULL, NULL, passphrase->buf, iv) != 1) {
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, eph_key->buf, iv) != 1) {
         ret_err = -EIO;
         goto decrypt_init_err;
     }
 
     if (ciphertext_len > INT_MAX) {
         ret_err = -E2BIG;
+        goto decrypt_init_err;
+    }
+
+    if (EVP_DecryptUpdate(ctx, NULL, &aad_out_len, (const uint8_t *)aad, (int)aad_len) != 1) {
+        ret_err = -EACCES;
         goto decrypt_init_err;
     }
 
@@ -795,7 +948,7 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
         }
     }
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, (void *)tag) != 1) {
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, tag_buf) != 1) {
         ret_err = -EIO;
         goto decrypt_update_err;
     }
@@ -822,42 +975,83 @@ static int do_aes_decrypt(const uint8_t *in_data, size_t in_len,
     return ret_err;
 }
 
+int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
+                     const char *rel_path, mode_t mode,
+                     struct decrypted_node *out) {
+    if (!enc_data || !rel_path || !out) {
+        return -EINVAL;
+    }
+
+    if (enc_len < CRED_ENV_MIN_OVERHEAD) {
+        return -EBADMSG;
+    }
+
+    if (memcmp(enc_data, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
+        return -EBADMSG;
+    }
+
+    uint64_t version_be = 0;
+    memcpy(&version_be, enc_data + 8, sizeof(version_be));
+    uint64_t version = be64toh(version_be);
+    if (version != CRED_ENV_VERSION_1) {
+        return -EPROTONOSUPPORT;
+    }
+
+    uint16_t rsa_ct_len_be = 0;
+    memcpy(&rsa_ct_len_be, enc_data + 16, sizeof(rsa_ct_len_be));
+    uint16_t rsa_ct_len = be16toh(rsa_ct_len_be);
+    if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
+        return -EBADMSG;
+    }
+
+    size_t header_len = CRED_ENV_FIXED_OVERHEAD + (size_t)rsa_ct_len;
+    if (enc_len <= header_len) {
+        return -EBADMSG;
+    }
+
+    char aad[PATH_MAX + 16];
+    int r = format_credential_aad(aad, sizeof(aad), rel_path, mode);
+    if (r < 0) {
+        return r;
+    }
+
+    const uint8_t *rsa_ct = enc_data + 18;
+    const uint8_t *iv = enc_data + 18 + rsa_ct_len;
+    const uint8_t *tag = enc_data + 30 + rsa_ct_len;
+    const uint8_t *ciphertext = enc_data + header_len;
+    size_t ciphertext_len = enc_len - header_len;
+
+    struct decrypted_node eph_key = { NULL, 0, 0 };
+    r = tpm2_rsa_decrypt(rsa_ct, rsa_ct_len, aad, &eph_key);
+    if (r < 0) {
+        clean_decrypted_node(&eph_key);
+        return r;
+    }
+
+    if (eph_key.len != 32) {
+        clean_decrypted_node(&eph_key);
+        return -EBADMSG;
+    }
+
+    r = do_aes_decrypt(iv, tag, ciphertext, ciphertext_len, aad, &eph_key, out);
+    clean_decrypted_node(&eph_key);
+    return r;
+}
+
 int decrypt_credential(int fd,
+		       const char *rel_path,
 		       struct decrypted_node *out) {
     uint8_t *enc_data = NULL;
     size_t enc_len = 0;
-    int is_aes;
-    struct decrypted_node passphrase = { NULL, 0, 0};
+    mode_t file_mode = 0;
     int r;
 
-    r = read_file_fd(fd, &enc_data, &enc_len, global_opts.max_file_size);
-    if (r < 0)
-        return r;
-
-    is_aes = (enc_len >= 36 && memcmp(enc_data, AES_HEADER, 8) == 0);
-
-    if (!is_aes) {
-        // RSA directly
-        r = tpm2_rsa_decrypt(enc_data, enc_len, out);
-	goto read_err;
-    }
-
-    // AES flow: needs host key
-    if (host_key.enc_len == 0) {
-        r = -ENOKEY;
-	goto read_err;
-    }
-
-    r = tpm2_rsa_decrypt(host_key.enc, host_key.enc_len, &passphrase);
+    r = read_file_fd(fd, &enc_data, &enc_len, &file_mode, (size_t)global_opts.max_file_size);
     if (r < 0) {
-	goto read_err;
+        return r;
     }
 
-    r = do_aes_decrypt(enc_data, enc_len, &passphrase, out);
-
- read_err:
-    clean_decrypted_node(&passphrase);
+    r = decrypt_envelope(enc_data, enc_len, rel_path, file_mode, out);
     free_munlock(enc_data, enc_len);
-
     return r;
 }

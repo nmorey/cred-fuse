@@ -13,7 +13,7 @@ rm -rf "${WORKDIR}/source"/*
 
 # Create test vector
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/missing.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/missing.enc" 0644
 rm -f "${WORKDIR}/valid.txt"
 
 # Start standard FUSE mount

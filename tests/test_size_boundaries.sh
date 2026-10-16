@@ -14,19 +14,19 @@ rm -rf "${WORKDIR}/source"/*
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 
 # Zero size
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/zero.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/zero.enc" 0644
 setfattr -n user.size -v 0 "${WORKDIR}/source/zero.enc"
 
 # Too short
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/short.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/short.enc" 0644
 setfattr -n user.size -v 2 "${WORKDIR}/source/short.enc"
 
 # Too long
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/long.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/long.enc" 0644
 setfattr -n user.size -v ff "${WORKDIR}/source/long.enc"
 
 # Garbage size
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/garbage.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/garbage.enc" 0644
 setfattr -n user.size -v random_string "${WORKDIR}/source/garbage.enc"
 
 rm -f "${WORKDIR}/valid.txt"

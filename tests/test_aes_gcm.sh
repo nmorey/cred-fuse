@@ -11,76 +11,109 @@ load_context "${BINARY_DIR}"
 # Clear any previous test vectors
 rm -rf "${WORKDIR}/source"/*
 
-# Create AES-256-GCM test vectors
-HOSTNAME_RAW=$(hostname)
-HOSTNAME="${HOSTNAME_RAW%%.*}"
-python3 -c "
-import os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-key = os.urandom(32)
-with open('${WORKDIR}/raw_host.key', 'wb') as f:
-    f.write(key)
-plaintext = b'aes-gcm-secret-value'
-aesgcm = AESGCM(key)
-iv = os.urandom(12)
-encrypted = aesgcm.encrypt(iv, plaintext, None)
-tag = encrypted[-16:]
-ciphertext = encrypted[:-16]
-with open('${WORKDIR}/source/gcm_test.enc', 'wb') as f:
-    f.write(b'Salted__')
-    f.write(iv)
-    f.write(tag)
-    f.write(ciphertext)
-tampered_ciphertext = bytearray(ciphertext)
-if len(tampered_ciphertext) > 0:
-    tampered_ciphertext[0] ^= 1
-with open('${WORKDIR}/source/gcm_tampered.enc', 'wb') as f:
-    f.write(b'Salted__')
-    f.write(iv)
-    f.write(tag)
-    f.write(bytes(tampered_ciphertext))
-"
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/${HOSTNAME}.key" "${WORKDIR}/raw_host.key" -T "swtpm"
-rm -f "${WORKDIR}/raw_host.key"
-setfattr -n user.size -v 20 "${WORKDIR}/source/${HOSTNAME}.key"
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_test.enc" # 20 bytes in hex is 14
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_tampered.enc"
-chmod 644 "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_tampered.enc"
+CRED_ENCRYPT="${BINARY_DIR}/cred-encrypt"
+CRED_DECRYPT="${BINARY_DIR}/cred-decrypt"
 
-echo "Testing rejection of overly permissive host key (0644)..."
-chmod 644 "${WORKDIR}/source/${HOSTNAME}.key"
-if "${FUSE_EXE}" -f "${WORKDIR}/source" "${WORKDIR}/credentials" -o "tpm_handle=0x81010002,tcti=swtpm,ro,default_permissions" 2>/dev/null; then
-    echo "ERROR: FUSE mounted despite overly permissive host key"
+# 1. Create standard and large CRED_ENV v1 test vectors using cred-encrypt
+echo -n "aes-gcm-secret-value" > "${WORKDIR}/plain_small.txt"
+rsa_encrypt_cred "${WORKDIR}/plain_small.txt" "${WORKDIR}/source/gcm_test.enc" 0644
+setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_test.enc" # 20 bytes in hex is 14
+
+head -c 4096 /dev/urandom | base64 | head -c 4096 > "${WORKDIR}/plain_large.txt"
+rsa_encrypt_cred "${WORKDIR}/plain_large.txt" "${WORKDIR}/source/gcm_large.enc" 0600
+setfattr -n user.size -v 1000 "${WORKDIR}/source/gcm_large.enc" # 4096 bytes in hex is 1000
+
+echo "Testing cred-decrypt CLI round-trip (small and large payloads)..."
+DECRYPTED_SMALL=$("${CRED_DECRYPT}" -c 0x81010002 -p "gcm_test.enc" -m 0644 -k "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG" -i "${WORKDIR}/source/gcm_test.enc")
+if [ "$DECRYPTED_SMALL" != "aes-gcm-secret-value" ]; then
+    echo "ERROR: cred-decrypt small payload mismatch"
     exit 1
 fi
-echo "TEST: Rejection of overly permissive host key: Success"
+"${CRED_DECRYPT}" -c 0x81010002 -p "gcm_large.enc" -m 0600 -k "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG" -i "${WORKDIR}/source/gcm_large.enc" -o "${WORKDIR}/decrypted_large.txt"
+if ! cmp -s "${WORKDIR}/plain_large.txt" "${WORKDIR}/decrypted_large.txt"; then
+    echo "ERROR: cred-decrypt large payload mismatch"
+    exit 1
+fi
+rm -f "${WORKDIR}/plain_small.txt" "${WORKDIR}/decrypted_large.txt"
+echo "TEST: cred-decrypt CLI round-trip: Success"
 
-chmod 600 "${WORKDIR}/source/${HOSTNAME}.key"
+echo "Testing cred-decrypt rejection of mismatched path or mode..."
+if "${CRED_DECRYPT}" -c 0x81010002 -p "wrong_path.enc" -m 0644 -T "$TCTI_ARG" -i "${WORKDIR}/source/gcm_test.enc" >/dev/null 2>&1; then
+    echo "ERROR: cred-decrypt succeeded with wrong --path"
+    exit 1
+fi
+if "${CRED_DECRYPT}" -c 0x81010002 -p "gcm_test.enc" -m 0600 -T "$TCTI_ARG" -i "${WORKDIR}/source/gcm_test.enc" >/dev/null 2>&1; then
+    echo "ERROR: cred-decrypt succeeded with wrong --mode"
+    exit 1
+fi
+echo "TEST: cred-decrypt path/mode binding verification: Success"
+
+# 2. Create tampered and swapped envelopes
+python3 -c "
+with open('${WORKDIR}/source/gcm_test.enc', 'rb') as f:
+    data = bytearray(f.read())
+
+# Tamper with the last byte (AES-GCM ciphertext)
+tampered_ct = bytearray(data)
+tampered_ct[-1] ^= 0x01
+with open('${WORKDIR}/source/gcm_tampered.enc', 'wb') as f:
+    f.write(tampered_ct)
+
+# Tamper with version field (offset 8..15 -> version 2)
+bad_ver = bytearray(data)
+bad_ver[15] = 2
+with open('${WORKDIR}/source/gcm_bad_version.enc', 'wb') as f:
+    f.write(bad_ver)
+"
+setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_tampered.enc"
+setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_bad_version.enc"
+chmod 644 "${WORKDIR}/source/gcm_tampered.enc" "${WORKDIR}/source/gcm_bad_version.enc"
+
+cp "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_swapped.enc"
+setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_swapped.enc"
+chmod 644 "${WORKDIR}/source/gcm_swapped.enc"
 
 # Start standard FUSE mount
 start_fuse "${FUSE_EXE}"
 
-echo "Testing AES-256-GCM valid decryption..."
+echo "Testing CRED_ENV v1 valid decryption (small and large)..."
 if [ "$(cat "${WORKDIR}/credentials/gcm_test.enc")" != "aes-gcm-secret-value" ]; then
-    echo "ERROR: AES-256-GCM file decryption mismatched"
+    echo "ERROR: CRED_ENV small file decryption mismatched"
     exit 1
 fi
-echo "TEST: AES-256-GCM valid decryption: Success"
+if ! cmp -s "${WORKDIR}/plain_large.txt" "${WORKDIR}/credentials/gcm_large.enc"; then
+    echo "ERROR: CRED_ENV large file decryption mismatched"
+    exit 1
+fi
+rm -f "${WORKDIR}/plain_large.txt"
+echo "TEST: CRED_ENV v1 valid decryption: Success"
 
-echo "Testing AES-256-GCM integrity failure handling..."
+echo "Testing CRED_ENV v1 AES-GCM integrity failure handling..."
 if cat "${WORKDIR}/credentials/gcm_tampered.enc" 2>/dev/null; then
-    echo "ERROR: Tampered AES-256-GCM file was successfully decrypted (should have failed)"
+    echo "ERROR: Tampered CRED_ENV file was successfully decrypted (should have failed)"
     exit 1
 fi
-echo "TEST: AES-256-GCM integrity failure handling: Success"
+echo "TEST: CRED_ENV v1 integrity failure handling: Success"
 
-echo "Testing that host key is hidden from FUSE mount..."
-if [ -e "${WORKDIR}/credentials/${HOSTNAME}.key" ] || cat "${WORKDIR}/credentials/${HOSTNAME}.key" 2>/dev/null; then
-    echo "ERROR: Host key ${HOSTNAME}.key is exposed inside FUSE mount"
+echo "Testing CRED_ENV unsupported version rejection..."
+if cat "${WORKDIR}/credentials/gcm_bad_version.enc" 2>/dev/null; then
+    echo "ERROR: CRED_ENV file with unsupported version was decrypted"
     exit 1
 fi
-if ls "${WORKDIR}/credentials" | grep -qx "${HOSTNAME}.key"; then
-    echo "ERROR: Host key ${HOSTNAME}.key is listed in readdir"
+echo "TEST: CRED_ENV unsupported version rejection: Success"
+
+echo "Testing CRED_ENV cross-file substitution rejection..."
+if cat "${WORKDIR}/credentials/gcm_swapped.enc" 2>/dev/null; then
+    echo "ERROR: Swapped CRED_ENV file was decrypted despite path mismatch"
     exit 1
 fi
-echo "TEST: Host key hidden from FUSE mount: Success"
+echo "TEST: CRED_ENV cross-file substitution rejection: Success"
+
+echo "Testing CRED_ENV permission tampering rejection..."
+chmod 600 "${WORKDIR}/source/gcm_test.enc"
+if cat "${WORKDIR}/credentials/gcm_test.enc" 2>/dev/null; then
+    echo "ERROR: CRED_ENV file was decrypted despite mode mismatch"
+    exit 1
+fi
+chmod 644 "${WORKDIR}/source/gcm_test.enc"
+echo "TEST: CRED_ENV permission tampering rejection: Success"

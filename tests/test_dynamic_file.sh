@@ -16,7 +16,7 @@ start_fuse "${FUSE_EXE}"
 
 echo "Testing dynamically added file..."
 echo -n "late-secret" > "${WORKDIR}/late.txt"
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/late.enc" "${WORKDIR}/late.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/late.txt" "${WORKDIR}/source/late.enc" 0644
 setfattr -n user.size -v b "${WORKDIR}/source/late.enc" # 'b' is 11 bytes
 rm -f "${WORKDIR}/late.txt"
 

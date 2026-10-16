@@ -25,13 +25,13 @@ trap cleanup_failure ERR
 
 export DBUS_SESSION_BUS_ADDRESS=/dev/null
 export TSS2_LOG=all+none
-TCTI_ARG="swtpm"
+TCTI_ARG="swtpm:path=${WORKDIR}/swtpm.sock"
 
-# 1. Setup swtpm (Default TCP port 2321)
+# 1. Setup swtpm (UNIX domain socket)
 mkdir -p "${WORKDIR}/tpmstate"
 swtpm socket --tpmstate dir="${WORKDIR}/tpmstate" --tpm2 \
-    --ctrl type=tcp,port=2322 \
-    --server type=tcp,port=2321 \
+    --ctrl type=unixio,path="${WORKDIR}/swtpm.sock.ctrl" \
+    --server type=unixio,path="${WORKDIR}/swtpm.sock" \
     --flags not-need-init,startup-clear >/dev/null 2>&1 &
 SWTPM_PID=$!
 echo "$SWTPM_PID" > "${BINARY_DIR}/swtpm.pid"
@@ -41,6 +41,8 @@ sleep 1
 tpm2_startup -c -T "$TCTI_ARG"
 tpm2_createprimary -Q -C o -G rsa -a 'decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth' -c "${WORKDIR}/primary.ctx" -T "$TCTI_ARG"
 tpm2_evictcontrol -C o -c "${WORKDIR}/primary.ctx" 0x81010002 -T "$TCTI_ARG" || true
+tpm2_readpublic -Q -c 0x81010002 -f pem -o "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG"
+chmod 644 "${WORKDIR}/tpm_pub.pem"
 
 mkdir -p "${WORKDIR}/source" "${WORKDIR}/credentials"
 

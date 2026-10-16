@@ -2,7 +2,6 @@
 
 export DBUS_SESSION_BUS_ADDRESS=/dev/null
 export TSS2_LOG=all+none
-TCTI_ARG="swtpm"
 
 load_context() {
     BINARY_DIR="$1"
@@ -20,21 +19,16 @@ load_context() {
         exit 1
     fi
     export WORKDIR
+    export TCTI_ARG="swtpm:path=${WORKDIR}/swtpm.sock"
 }
 
-generate_aes_host_key() {
-    HOSTNAME_RAW=$(hostname)
-    HOSTNAME="${HOSTNAME_RAW%%.*}"
-    python3 -c "
-import os
-key = os.urandom(32)
-with open('${WORKDIR}/raw_host.key', 'wb') as f:
-    f.write(key)
-"
-    tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/${HOSTNAME}.key" "${WORKDIR}/raw_host.key" -T "swtpm"
-    rm -f "${WORKDIR}/raw_host.key"
-    chmod 600 "${WORKDIR}/source/${HOSTNAME}.key"
-    setfattr -n user.size -v 20 "${WORKDIR}/source/${HOSTNAME}.key"
+rsa_encrypt_cred() {
+    local src="$1"
+    local dst="$2"
+    local mode="${3:-0644}"
+    local rel_path="${dst#${WORKDIR}/source/}"
+    "${BINARY_DIR}/cred-encrypt" -k "${WORKDIR}/tpm_pub.pem" -p "$rel_path" -m "$mode" -i "$src" -o "$dst"
+    chmod "$mode" "$dst"
 }
 
 start_fuse() {
@@ -47,7 +41,7 @@ start_fuse() {
     fi
 
     # Build the full mount options
-    FUSE_OPTS="tpm_handle=0x81010002,tcti=swtpm,ro,default_permissions"
+    FUSE_OPTS="tpm_handle=0x81010002,tcti=${TCTI_ARG},ro,default_permissions"
     if [ -n "$EXTRA_OPTS" ]; then
         FUSE_OPTS="${FUSE_OPTS},${EXTRA_OPTS}"
     fi

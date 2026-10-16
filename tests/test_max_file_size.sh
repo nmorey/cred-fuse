@@ -13,9 +13,8 @@ rm -rf "${WORKDIR}/source"/*
 
 # Create test vector
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
-tpm2_rsaencrypt -c 0x81010002 -s oaep -o "${WORKDIR}/source/valid.enc" "${WORKDIR}/valid.txt" -T "swtpm"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
 setfattr -n user.size -v c "${WORKDIR}/source/valid.enc" # 'c' is 12 bytes
-chmod 644 "${WORKDIR}/source/valid.enc"
 rm -f "${WORKDIR}/valid.txt"
 
 # Start FUSE mount with custom max_file_size option

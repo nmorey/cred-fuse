@@ -343,14 +343,20 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 
     fi->direct_io = 1;
 
+    char *path = get_inode_path(ino);
+    if (!path) {
+        err_code = errno ? errno : ENOENT;
+        goto err_close;
+    }
+
     node = malloc(sizeof(struct decrypted_node));
     if (!node) {
         err_code = ENOMEM;
-        goto err_close;
+        goto err_free_path;
     }
     memset(node, 0, sizeof(*node));
 
-    int r = decrypt_credential(fd, node);
+    int r = decrypt_credential(fd, path, node);
     if (r < 0) {
         err_code = -r;
         goto err_free_node;
@@ -367,7 +373,6 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 
     if (audit_fd >= 0) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
-        char *path = get_inode_path(ino);
 
         const char *mount_prefix = global_opts.mountpoint ? global_opts.mountpoint : "";
         if (strcmp(mount_prefix, "/") == 0) {
@@ -377,7 +382,7 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         char msg[1024];
         int ret = snprintf(msg, sizeof(msg),
                  "op=open path=\"%s%s\" uid=%u gid=%u pid=%d res=success",
-                 mount_prefix, path ? path : "unknown", ctx->uid, ctx->gid, ctx->pid);
+                 mount_prefix, path, ctx->uid, ctx->gid, ctx->pid);
         if (ret >= (int)sizeof(msg)) {
             syslog(LOG_WARNING, "cred_ll_open: audit message truncated");
         }
@@ -385,17 +390,17 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
         if (rc < 0) {
             syslog(LOG_WARNING, "cred_ll_open: audit_log_user_message failed: %s", strerror(errno));
         }
-        if (path) {
-            free(path);
-        }
     }
 
+    free(path);
     fuse_reply_open(req, fi);
     return;
 
 err_free_node:
     clean_decrypted_node(node);
     free(node);
+err_free_path:
+    free(path);
 err_close:
     close(fd);
 err_decrement:
@@ -594,102 +599,6 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     free(rel_path);
 }
 
-static int validate_tcti(const char *tcti) {
-    if (!tcti) {
-        return 1;
-    }
-
-    const char *allowed_schemes[] = {
-        "device",
-#ifdef CRED_FUSE_ENABLE_SWTPM
-        "swtpm",
-#endif
-        "tabrmd"
-    };
-    size_t allowed_count = sizeof(allowed_schemes) / sizeof(allowed_schemes[0]);
-
-    const char *colon = strchr(tcti, ':');
-    size_t scheme_len = colon ? (size_t)(colon - tcti) : strlen(tcti);
-
-    // 1. Validate Scheme
-    int scheme_found = 0;
-    const char *scheme = NULL;
-    for (size_t i = 0; i < allowed_count; i++) {
-        if (scheme_len == strlen(allowed_schemes[i]) && strncmp(tcti, allowed_schemes[i], scheme_len) == 0) {
-            scheme_found = 1;
-            scheme = allowed_schemes[i];
-            break;
-        }
-    }
-    if (!scheme_found) {
-        return 0; // Unknown or forbidden scheme (e.g., mssim, none)
-    }
-
-    // Bare scheme without ':options' (e.g., "tabrmd", "device", "swtpm")
-    if (!colon) {
-#ifdef CRED_FUSE_ENABLE_SWTPM
-        if (strcmp(scheme, "swtpm") == 0) {
-            return 0; // Bare "swtpm" defaults to TCP; require "swtpm:path=/..."
-        }
-#endif
-        if (strcmp(scheme, "device") == 0) {
-            return 0; // Bare "device" can fall back to /dev/tpm0; require "device:/dev/tpmrm..."
-        }
-        return 1; // Bare "tabrmd" is valid
-    }
-
-    const char *options = colon + 1;
-    if (*options == '\0') {
-        return 0; // Empty options trailing a colon is invalid
-    }
-
-    // 2. Validate Options based on Scheme
-    if (strcmp(scheme, "device") == 0) {
-        // Must use the in-kernel TPM resource manager: e.g. /dev/tpmrm0
-        if (strncmp(options, "/dev/tpmrm", 10) != 0 || options[10] == '\0') {
-            return 0;
-        }
-        for (size_t i = 10; options[i] != '\0'; i++) {
-            char c = options[i];
-            if (!(c >= '0' && c <= '9')) {
-                return 0; // Block raw /dev/tpm0, path traversal, or non-digits
-            }
-        }
-#ifdef CRED_FUSE_ENABLE_SWTPM
-    } else if (strcmp(scheme, "swtpm") == 0) {
-        // Swtpm requires path=/absolute/path/to/socket
-        if (strncmp(options, "path=", 5) != 0) {
-            return 0;
-        }
-        const char *path = options + 5;
-        if (path[0] != '/' || path[1] == '\0') {
-            return 0; // Must be a non-root absolute path
-        }
-        if (strstr(path, "..") != NULL) {
-            return 0; // Block path traversal sequences
-        }
-        for (size_t i = 0; path[i] != '\0'; i++) {
-            char c = path[i];
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || 
-                  c == '/' || c == '.' || c == '-' || c == '_')) {
-                return 0; // Block commands, wildcard shells, etc.
-            }
-        }
-#endif
-    } else if (strcmp(scheme, "tabrmd") == 0) {
-        // Tabrmd allows bus_name and bus_type (alphanumeric, =, ,, -, _, .)
-        for (size_t i = 0; options[i] != '\0'; i++) {
-            char c = options[i];
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || 
-                  c == '=' || c == ',' || c == '-' || c == '_' || c == '.')) {
-                return 0;
-            }
-        }
-    }
-
-    return 1;
-}
-
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_session *se = NULL;
@@ -788,7 +697,7 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
-    if (init_decryption(global_opts.source_dir) != 0) {
+    if (init_decryption() != 0) {
         fprintf(stderr, "Failed to initialize decryption\n");
         ret = 1;
         goto err_early;
