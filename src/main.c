@@ -644,6 +644,7 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             struct stat dot_st;
             memset(&dot_st, 0, sizeof(dot_st));
             dot_st.st_ino = ino;
+            dot_st.st_mode = S_IFDIR;
             fuse_add_direntry(req, buf + used, size - used, ".", &dot_st, 1);
             used += entry_size;
         } else {
@@ -654,9 +655,24 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
     if (off <= 1) {
         size_t entry_size = fuse_add_direntry(req, NULL, 0, "..", NULL, 0);
         if (used + entry_size <= size) {
+            fuse_ino_t parent_ino = 1;
+            const char *last_slash = strrchr(rel_path, '/');
+            if (last_slash && last_slash > rel_path) {
+                size_t parent_len = (size_t)(last_slash - rel_path);
+                if (parent_len < PATH_MAX) {
+                    char parent_rel_path[PATH_MAX];
+                    memcpy(parent_rel_path, rel_path, parent_len);
+                    parent_rel_path[parent_len] = '\0';
+                    fuse_ino_t resolved = add_inode(parent_rel_path, 0);
+                    if (resolved != 0) {
+                        parent_ino = resolved;
+                    }
+                }
+            }
             struct stat dotdot_st;
             memset(&dotdot_st, 0, sizeof(dotdot_st));
-            dotdot_st.st_ino = 1;
+            dotdot_st.st_ino = parent_ino;
+            dotdot_st.st_mode = S_IFDIR;
             fuse_add_direntry(req, buf + used, size - used, "..", &dotdot_st, 2);
             used += entry_size;
         } else {
