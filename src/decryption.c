@@ -1021,6 +1021,10 @@ int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
     const uint8_t *ciphertext = enc_data + header_len;
     size_t ciphertext_len = enc_len - header_len;
 
+    if (global_opts.max_file_size > 0 && ciphertext_len > (size_t)global_opts.max_file_size) {
+        return -EFBIG;
+    }
+
     struct decrypted_node eph_key = { NULL, 0, 0 };
     r = tpm2_rsa_decrypt(rsa_ct, rsa_ct_len, aad, &eph_key);
     if (r < 0) {
@@ -1046,7 +1050,8 @@ int decrypt_credential(int fd,
     mode_t file_mode = 0;
     int r;
 
-    r = read_file_fd(fd, &enc_data, &enc_len, &file_mode, (size_t)global_opts.max_file_size);
+    size_t max_enc_size = (size_t)global_opts.max_file_size + CRED_ENV_MAX_OVERHEAD;
+    r = read_file_fd(fd, &enc_data, &enc_len, &file_mode, max_enc_size);
     if (r < 0) {
         return r;
     }

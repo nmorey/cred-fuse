@@ -14,10 +14,8 @@ rm -rf "${WORKDIR}/source"/*
 # Create test vector for this test
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/valid.enc" # 'c' is 12 bytes
 rm -f "${WORKDIR}/valid.txt"
 cp "${WORKDIR}/source/valid.enc" "${WORKDIR}/source/swapped.enc"
-setfattr -n user.size -v c "${WORKDIR}/source/swapped.enc"
 chmod 644 "${WORKDIR}/source/swapped.enc"
 
 # Export TPM public key in PEM format and generate a mismatched RSA public key

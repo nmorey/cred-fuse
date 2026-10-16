@@ -7,7 +7,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/xattr.h>
+#include <endian.h>
 
 /* Safely join a parent path and a component name, avoiding duplicate slashes */
 int join_paths(char *dest, size_t size, const char *parent, const char *child) {
@@ -116,28 +116,46 @@ int open_and_validate_path(const char *full_path, struct stat *st_out) {
     }
 
     if (S_ISREG(st_out->st_mode)) {
-        char xattr_buf[64] = {0};
-        ssize_t s = fgetxattr(fd, "user.size", xattr_buf, sizeof(xattr_buf));
-        if (s <= 0 || s >= (ssize_t)sizeof(xattr_buf)) {
+        uint8_t hdr[18];
+        ssize_t n = pread(fd, hdr, sizeof(hdr), 0);
+        if (n != (ssize_t)sizeof(hdr)) {
             close(fd);
             return -ENOENT;
         }
 
-        if (memchr(xattr_buf, '\0', (size_t)s) != NULL) {
+        if (memcmp(hdr, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
             close(fd);
             return -ENOENT;
         }
 
-        char *endptr;
-        long parsed_size;
-        xattr_buf[s] = '\0';
-        errno = 0;
-        parsed_size = strtol(xattr_buf, &endptr, 16);
-        if (errno || endptr == xattr_buf || *endptr != '\0' || parsed_size < 0 || parsed_size > global_opts.max_file_size) {
+        uint64_t version_be = 0;
+        memcpy(&version_be, hdr + 8, sizeof(version_be));
+        if (be64toh(version_be) != CRED_ENV_VERSION_1) {
             close(fd);
             return -ENOENT;
         }
-        st_out->st_size = parsed_size;
+
+        uint16_t rsa_ct_len_be = 0;
+        memcpy(&rsa_ct_len_be, hdr + 16, sizeof(rsa_ct_len_be));
+        uint16_t rsa_ct_len = be16toh(rsa_ct_len_be);
+        if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
+            close(fd);
+            return -ENOENT;
+        }
+
+        off_t overhead = (off_t)(CRED_ENV_FIXED_OVERHEAD + rsa_ct_len);
+        if (st_out->st_size <= overhead) {
+            close(fd);
+            return -ENOENT;
+        }
+
+        off_t plaintext_size = st_out->st_size - overhead;
+        if (plaintext_size > (off_t)global_opts.max_file_size) {
+            close(fd);
+            return -ENOENT;
+        }
+
+        st_out->st_size = plaintext_size;
     }
 
     return fd;

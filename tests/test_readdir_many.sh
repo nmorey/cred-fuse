@@ -14,13 +14,11 @@ rm -rf "${WORKDIR}/source"/*
 # Create 3000 files for readdir test
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/valid.enc"
 rm -f "${WORKDIR}/valid.txt"
 
 mkdir -p "${WORKDIR}/source/many"
 for i in $(seq 1 3000); do
     cp "${WORKDIR}/source/valid.enc" "${WORKDIR}/source/many/file_$i.enc"
-    setfattr -n user.size -v c "${WORKDIR}/source/many/file_$i.enc"
 done
 
 # Start standard FUSE mount

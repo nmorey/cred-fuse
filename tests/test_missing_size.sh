@@ -11,31 +11,30 @@ load_context "${BINARY_DIR}"
 # Clear any previous test vectors
 rm -rf "${WORKDIR}/source"/*
 
-# Create test vector
-echo -n "valid-secret" > "${WORKDIR}/valid.txt"
-rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/missing.enc" 0644
-rm -f "${WORKDIR}/valid.txt"
+# Create a non-CRED_ENV file (e.g., raw data without CRED_ENV header)
+head -c 256 /dev/urandom > "${WORKDIR}/source/missing.enc"
+chmod 644 "${WORKDIR}/source/missing.enc"
 
 # Start standard FUSE mount
 start_fuse "${FUSE_EXE}"
 
-echo "Testing Missing user.size (readdir)..."
+echo "Testing Missing CRED_ENV header (readdir)..."
 if ls "${WORKDIR}/credentials" | grep -q missing.enc; then
-    echo "ERROR: File without user.size appeared in readdir (ls)"
+    echo "ERROR: File without CRED_ENV header appeared in readdir (ls)"
     exit 1
 fi
-echo "TEST: Missing user.size (readdir): Success"
+echo "TEST: Missing CRED_ENV header (readdir): Success"
 
-echo "Testing Missing user.size (getattr)..."
+echo "Testing Missing CRED_ENV header (getattr)..."
 if [ -e "${WORKDIR}/credentials/missing.enc" ]; then
-    echo "ERROR: File without user.size is accessible via getattr (stat)"
+    echo "ERROR: File without CRED_ENV header is accessible via getattr (stat)"
     exit 1
 fi
-echo "TEST: Missing user.size (getattr): Success"
+echo "TEST: Missing CRED_ENV header (getattr): Success"
 
-echo "Testing Missing user.size (read)..."
+echo "Testing Missing CRED_ENV header (read)..."
 if cat "${WORKDIR}/credentials/missing.enc" 2>/dev/null; then
-    echo "ERROR: File without user.size is readable"
+    echo "ERROR: File without CRED_ENV header is readable"
     exit 1
 fi
-echo "TEST: Missing user.size (read): Success"
+echo "TEST: Missing CRED_ENV header (read): Success"

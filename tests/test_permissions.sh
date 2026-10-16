@@ -15,17 +15,13 @@ rm -rf "${WORKDIR}/source"/*
 echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 
 # perms.enc: 400
-"${BINARY_DIR}/cred-encrypt" -k "${WORKDIR}/tpm_pub.pem" -p "perms.enc" -m 0400 -i "${WORKDIR}/valid.txt" -o "${WORKDIR}/source/perms.enc"
-setfattr -n user.size -v c "${WORKDIR}/source/perms.enc"
-chmod 0400 "${WORKDIR}/source/perms.enc"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/perms.enc" 0400
 
 # valid.enc: 644
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/valid.enc"
 
 # write_perms.enc: 777
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/write_perms.enc" 0777
-setfattr -n user.size -v c "${WORKDIR}/source/write_perms.enc"
 
 rm -f "${WORKDIR}/valid.txt"
 

@@ -11,18 +11,27 @@ load_context "${BINARY_DIR}"
 # Clear any previous test vectors
 rm -rf "${WORKDIR}/source"/*
 
-# Create test vector
-echo -n "valid-secret" > "${WORKDIR}/valid.txt"
-rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/valid.enc" # 'c' is 12 bytes
-rm -f "${WORKDIR}/valid.txt"
+# Create 12-byte and 200-byte test vectors
+echo -n "valid-secret" > "${WORKDIR}/small.txt"
+rsa_encrypt_cred "${WORKDIR}/small.txt" "${WORKDIR}/source/small.enc" 0644
+rm -f "${WORKDIR}/small.txt"
 
-# Start FUSE mount with custom max_file_size option
+head -c 200 /dev/urandom | base64 | head -c 200 > "${WORKDIR}/too_big.txt"
+rsa_encrypt_cred "${WORKDIR}/too_big.txt" "${WORKDIR}/source/too_big.enc" 0644
+rm -f "${WORKDIR}/too_big.txt"
+
+# Start FUSE mount with custom max_file_size=100 (plaintext limit)
 start_fuse "${FUSE_EXE}" "max_open_files=2,max_file_size=100"
 
-echo "Testing max_file_size limit..."
-if cat "${WORKDIR}/credentials/valid.enc" 2>/dev/null; then
-    echo "ERROR: File size limit failed, file was read successfully (max_file_size=100 < 256)"
+echo "Testing max_file_size allows credential <= max_file_size despite envelope overhead..."
+if [ "$(cat "${WORKDIR}/credentials/small.enc")" != "valid-secret" ]; then
+    echo "ERROR: 12-byte credential failed to read with max_file_size=100"
+    exit 1
+fi
+
+echo "Testing max_file_size rejects credential > max_file_size..."
+if cat "${WORKDIR}/credentials/too_big.enc" 2>/dev/null; then
+    echo "ERROR: 200-byte credential was read successfully despite max_file_size=100"
     exit 1
 fi
 echo "TEST: max_file_size: Success"

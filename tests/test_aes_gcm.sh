@@ -17,11 +17,9 @@ CRED_DECRYPT="${BINARY_DIR}/cred-decrypt"
 # 1. Create standard and large CRED_ENV v1 test vectors using cred-encrypt
 echo -n "aes-gcm-secret-value" > "${WORKDIR}/plain_small.txt"
 rsa_encrypt_cred "${WORKDIR}/plain_small.txt" "${WORKDIR}/source/gcm_test.enc" 0644
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_test.enc" # 20 bytes in hex is 14
 
 head -c 4096 /dev/urandom | base64 | head -c 4096 > "${WORKDIR}/plain_large.txt"
 rsa_encrypt_cred "${WORKDIR}/plain_large.txt" "${WORKDIR}/source/gcm_large.enc" 0600
-setfattr -n user.size -v 1000 "${WORKDIR}/source/gcm_large.enc" # 4096 bytes in hex is 1000
 
 echo "Testing cred-decrypt CLI round-trip (small and large payloads)..."
 DECRYPTED_SMALL=$("${CRED_DECRYPT}" -c 0x81010002 -p "gcm_test.enc" -m 0644 -k "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG" -i "${WORKDIR}/source/gcm_test.enc")
@@ -65,12 +63,9 @@ bad_ver[15] = 2
 with open('${WORKDIR}/source/gcm_bad_version.enc', 'wb') as f:
     f.write(bad_ver)
 "
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_tampered.enc"
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_bad_version.enc"
 chmod 644 "${WORKDIR}/source/gcm_tampered.enc" "${WORKDIR}/source/gcm_bad_version.enc"
 
 cp "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_swapped.enc"
-setfattr -n user.size -v 14 "${WORKDIR}/source/gcm_swapped.enc"
 chmod 644 "${WORKDIR}/source/gcm_swapped.enc"
 
 # Start standard FUSE mount

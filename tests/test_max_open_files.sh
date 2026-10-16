@@ -15,16 +15,12 @@ echo -n "valid-secret" > "${WORKDIR}/valid.txt"
 
 # Create valid.enc
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/valid.enc"
 
 # Create perms.enc
-"${BINARY_DIR}/cred-encrypt" -k "${WORKDIR}/tpm_pub.pem" -p "perms.enc" -m 0400 -i "${WORKDIR}/valid.txt" -o "${WORKDIR}/source/perms.enc"
-setfattr -n user.size -v c "${WORKDIR}/source/perms.enc"
-chmod 0400 "${WORKDIR}/source/perms.enc"
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/perms.enc" 0400
 
 # Create late.enc
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/late.enc" 0644
-setfattr -n user.size -v c "${WORKDIR}/source/late.enc"
 
 rm -f "${WORKDIR}/valid.txt"
 
