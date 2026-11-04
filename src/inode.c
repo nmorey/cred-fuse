@@ -10,6 +10,13 @@
 #include <stdio.h>
 #include <syslog.h>
 
+/*
+ * Design rationale: This is a credential filesystem for services requiring
+ * transparent credential file access. There is no reasonable use case where
+ * a system would need more than 8K credentials, and this daemon is not
+ * designed to handle that. A fixed table of 8,192 inodes with eviction of
+ * unreferenced entries is sufficient.
+ */
 #define MAX_INODE_LOG2 13
 #define MAX_INODE (1U << MAX_INODE_LOG2)
 #define BITMASK_WORDS (MAX_INODE / 64)
