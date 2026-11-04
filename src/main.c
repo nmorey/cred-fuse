@@ -861,6 +861,15 @@ static int drop_privileges(void) {
 
     (void)prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
 
+    /*
+     * Design note on capabilities:
+     * Active event loop operations only require DAC_READ_SEARCH, IPC_LOCK, and AUDIT_WRITE.
+     * AUDIT_CONTROL and SYS_ADMIN are dropped from the effective set during runtime, but
+     * are retained in the permitted set because the daemon process must self-clean its
+     * audit exclude netlink rules and perform unmount (umount2) upon shutdown.
+     * Since PR_SET_NO_NEW_PRIVS is active, external setuid helpers (e.g., fusermount3)
+     * cannot be used for cleanup.
+     */
     uint64_t eff_mask = (1ULL << CAP_DAC_READ_SEARCH) |
                         (1ULL << CAP_IPC_LOCK) |
                         (1ULL << CAP_AUDIT_WRITE);
