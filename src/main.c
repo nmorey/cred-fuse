@@ -36,6 +36,7 @@
 #include <grp.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <poll.h>
 #include <libaudit.h>
@@ -129,6 +130,16 @@ static void init_audit_system(void) {
     if (audit_fd < 0) {
         syslog(LOG_WARNING, "Warning: Failed to open kernel audit netlink socket: %s (errno: %d)",
                strerror(errno), errno);
+        return;
+    }
+
+    struct timeval tv = {
+        .tv_sec = 0,
+        .tv_usec = 250000 /* 250 ms send timeout to prevent blocking on netlink queue congestion */
+    };
+    if (setsockopt(audit_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+        syslog(LOG_WARNING, "Warning: Failed to set SO_SNDTIMEO on audit socket: %s",
+               strerror(errno));
     }
 }
 
