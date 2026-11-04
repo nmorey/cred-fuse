@@ -102,6 +102,14 @@ static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outa
     return 1; /* Keep other arguments (like the mountpoint) */
 }
 
+/*
+ * Design note on per-UID open file limits:
+ * System daemons (UID < MAX_SYSTEM_UID) receive dedicated slots 0..999 to
+ * ensure autostart services have guaranteed access to HW-encrypted credentials.
+ * Non-system users (UID >= MAX_SYSTEM_UID) intentionally share a single slot
+ * (MAX_SYSTEM_UID) as interactive users are expected to utilize dedicated
+ * credential stores (e.g., password managers) rather than this filesystem.
+ */
 #define MAX_SYSTEM_UID 1000
 #define UID_COUNTER_SLOTS (MAX_SYSTEM_UID + 1)
 static int open_files_per_uid[UID_COUNTER_SLOTS];
