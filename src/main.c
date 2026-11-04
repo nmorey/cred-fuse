@@ -458,6 +458,14 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
     fuse_reply_attr(req, &st, 1.0);
 }
 
+/*
+ * Design rationale: Plaintext is decrypted once on open() and retained in an
+ * mlocked, non-dumpable buffer for the lifespan of the open file descriptor
+ * (fi->fh) until release(). This provides transparent, zero-copy POSIX read()
+ * performance without re-invoking slow TPM hardware on every read. Exposure
+ * is bounded by per-UID max_open_files limits, mlockall (no swap), and
+ * PR_SET_DUMPABLE=0 (no core dumps), with immediate OPENSSL_cleanse on close.
+ */
 /* 3. OPEN: Open a file safely */
 static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
     int fd = -1;
