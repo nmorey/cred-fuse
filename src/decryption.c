@@ -238,6 +238,16 @@ int parse_octal_mode(const char *mode_str, mode_t *mode_out) {
     return 0;
 }
 
+/*
+ * Design note on AAD construction:
+ * Additional Authenticated Data binds the relative path and octal mode.
+ * UID and GID are intentionally omitted from AAD to allow encrypted
+ * credentials to be deployed from central control nodes across heterogeneous
+ * server fleets where target service UIDs/GIDs may not match. Access control
+ * integrity is enforced via Linux DAC default_permissions, and directory
+ * hierarchies within source_dir are strictly verified to be root-owned to
+ * prevent unauthorized local metadata modification.
+ */
 int format_credential_aad(char *buf, size_t buf_sz, const char *rel_path, mode_t mode) {
     if (!buf || buf_sz == 0 || !rel_path) {
         return -EINVAL;
