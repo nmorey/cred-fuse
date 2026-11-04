@@ -1003,6 +1003,12 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
+    if ((sd_st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        fprintf(stderr, "Error: source_dir must not be group- or world-writable.\n");
+        ret = 1;
+        goto err_early;
+    }
+
     if (!is_ro) {
         fprintf(stderr, "Error: Must be mounted with the 'ro' (read-only) option.\n");
         ret = 1;
