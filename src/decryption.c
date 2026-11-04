@@ -507,6 +507,18 @@ static int verify_and_pin_tpm_key(ESYS_CONTEXT *esys_ctx, ESYS_TR key_handle) {
             goto out;
         }
 
+        if (out_public->publicArea.objectAttributes & TPMA_OBJECT_RESTRICTED) {
+            syslog(LOG_ERR, "verify_and_pin_tpm_key: TPM handle 0x%08x is a restricted decryption key (0x%08x)",
+                   global_opts.tpm_handle, out_public->publicArea.objectAttributes);
+            fprintf(stderr, "Error: TPM handle 0x%08x is a restricted decryption key (e.g. Storage Key). An unrestricted decryption key is required.\n",
+                    global_opts.tpm_handle);
+            Esys_Free(out_public);
+            Esys_Free(name);
+            Esys_Free(qualified_name);
+            ret = -EKEYREJECTED;
+            goto out;
+        }
+
         if (pinned_key.modulus_len > 0) {
             if (out_public->publicArea.unique.rsa.size != pinned_key.modulus_len ||
                 CRYPTO_memcmp(out_public->publicArea.unique.rsa.buffer,
