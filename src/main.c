@@ -47,6 +47,8 @@
 #include "path.h"
 
 #define MAX_ALLOWED_FILE_SIZE 65536
+#define TPM_SAFE_DEFAULT_MAX_THREADS 5
+#define TPM_WARN_MAX_THREADS 10
 
 struct cred_fuse_opts global_opts;
 
@@ -67,6 +69,7 @@ static const struct fuse_opt cred_opts[] = {
     CRED_OPT("tcti=%s", tcti),
     { "max_open_files=%d", offsetof(struct cred_fuse_opts, max_open_files), 0 },
     { "max_file_size=%d", offsetof(struct cred_fuse_opts, max_file_size), 0 },
+    { "max_threads=%d", offsetof(struct cred_fuse_opts, max_threads), 0 },
     FUSE_OPT_KEY("ro", KEY_RO),
     FUSE_OPT_KEY("default_permissions", KEY_DEFAULT_PERMISSIONS),
     FUSE_OPT_KEY("rw", KEY_FORBIDDEN_MOUNT_OPT),
@@ -920,6 +923,7 @@ int main(int argc, char *argv[]) {
     global_opts.source_dir_fd = -1;
     global_opts.max_open_files = 1024;
     global_opts.max_file_size = MAX_ALLOWED_FILE_SIZE;
+    global_opts.max_threads = -1;
 
     if (fuse_opt_parse(&args, &global_opts, cred_opts, opt_proc) == -1) {
         return 1;
@@ -1053,6 +1057,22 @@ int main(int argc, char *argv[]) {
     if (fuse_parse_cmdline(&args, &opts) != 0) {
         ret = 1;
         goto err_early;
+    }
+
+    /*
+     * Bound default worker threads to prevent overwhelming the TPM resource
+     * manager (/dev/tpmrm0) with concurrent cryptographic sessions during
+     * parallel I/O bursts. Warn if explicitly configured above 10.
+     */
+    if (global_opts.max_threads > 0) {
+        opts.max_threads = (unsigned int)global_opts.max_threads;
+    } else {
+        opts.max_threads = TPM_SAFE_DEFAULT_MAX_THREADS;
+    }
+    if (opts.max_threads > TPM_WARN_MAX_THREADS) {
+        syslog(LOG_WARNING,
+               "Warning: max_threads (%u) exceeds %d; concurrent requests may exhaust TPM hardware sessions or overload /dev/tpmrm0",
+               opts.max_threads, TPM_WARN_MAX_THREADS);
     }
 
     if (opts.mountpoint == NULL) {

@@ -27,6 +27,7 @@ struct cred_fuse_opts {
     char *tcti;
     int max_open_files;
     int max_file_size;
+    int max_threads;
 };
 
 struct decrypted_node {
