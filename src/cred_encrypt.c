@@ -34,9 +34,11 @@ static void print_usage(const char *prog) {
             "Required arguments:\n"
             "  -k, --pubkey <path>     RSA-2048/4096 public key file (PEM or TSS2 TPM2B_PUBLIC)\n"
             "  -p, --path <rel_path>   Relative path in the mounted FUSE filesystem\n"
-            "  -m, --mode <octal_mode> File permissions in octal (e.g. 0600, 0400, 0640)\n"
+            "  -m, --mode <octal_mode> Target permissions in octal (e.g. 0600, 0400) bound into cryptographic AAD\n"
+            "                          (does not modify file permissions on disk unless --set-mode is passed)\n"
             "\n"
             "Optional arguments:\n"
+            "  -s, --set-mode          Apply the specified octal mode directly to the output file on disk via chmod\n"
             "  -i, --input <path>      Input plaintext file (default: stdin)\n"
             "  -o, --output <path>     Output encrypted file (default: stdout)\n"
             "  -h, --help              Show this help message\n",
@@ -107,23 +109,26 @@ int main(int argc, char *argv[]) {
     const char *mode_str = NULL;
     const char *in_path = NULL;
     const char *out_path = NULL;
+    int set_mode = 0;
 
     static const struct option long_opts[] = {
-        {"pubkey", required_argument, NULL, 'k'},
-        {"path",   required_argument, NULL, 'p'},
-        {"mode",   required_argument, NULL, 'm'},
-        {"input",  required_argument, NULL, 'i'},
-        {"output", required_argument, NULL, 'o'},
-        {"help",   no_argument,       NULL, 'h'},
+        {"pubkey",   required_argument, NULL, 'k'},
+        {"path",     required_argument, NULL, 'p'},
+        {"mode",     required_argument, NULL, 'm'},
+        {"set-mode", no_argument,       NULL, 's'},
+        {"input",    required_argument, NULL, 'i'},
+        {"output",   required_argument, NULL, 'o'},
+        {"help",     no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "k:p:m:i:o:h", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "k:p:m:si:o:h", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'k': pubkey_path = optarg; break;
             case 'p': rel_path = optarg; break;
             case 'm': mode_str = optarg; break;
+            case 's': set_mode = 1; break;
             case 'i': in_path = optarg; break;
             case 'o': out_path = optarg; break;
             case 'h':
@@ -139,6 +144,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: --pubkey (-k), --path (-p), and --mode (-m) are required.\n");
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (set_mode && !out_path) {
+        fprintf(stderr, "Warning: --set-mode (-s) has no effect when writing to standard output.\n");
     }
 
     mode_t mode = 0;
@@ -283,6 +292,12 @@ int main(int argc, char *argv[]) {
         if (out_fd < 0) {
             fprintf(stderr, "Error: Cannot open output file '%s': %s\n", out_path, strerror(errno));
             goto cleanup;
+        }
+        if (set_mode) {
+            if (fchmod(out_fd, mode & 07777) < 0) {
+                fprintf(stderr, "Error: Cannot set permissions on '%s': %s\n", out_path, strerror(errno));
+                goto cleanup;
+            }
         }
     }
 
