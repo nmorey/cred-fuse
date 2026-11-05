@@ -37,9 +37,10 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <time.h>
 #include <pthread.h>
 #include <poll.h>
-#include <libaudit.h>
+#include "audit.h"
 #include <limits.h>
 #include <syslog.h>
 #include <sys/wait.h>
@@ -124,204 +125,8 @@ static inline uint16_t uid_to_slot(uid_t uid) {
     return (uid < MAX_SYSTEM_UID) ? (uint16_t)uid : (uint16_t)MAX_SYSTEM_UID;
 }
 
-static int audit_fd = -1;
-static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static void init_audit_system(void) {
-    audit_fd = audit_open();
-    if (audit_fd < 0) {
-        syslog(LOG_WARNING, "Warning: Failed to open kernel audit netlink socket: %s (errno: %d)",
-               strerror(errno), errno);
-        return;
-    }
-
-    struct timeval tv = {
-        .tv_sec = 0,
-        .tv_usec = 250000 /* 250 ms send timeout to prevent blocking on netlink queue congestion */
-    };
-    if (setsockopt(audit_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
-        syslog(LOG_WARNING, "Warning: Failed to set SO_SNDTIMEO on audit socket: %s",
-               strerror(errno));
-    }
-}
-
-static void shutdown_audit_system(void) {
-    if (audit_fd >= 0) {
-        audit_close(audit_fd);
-        audit_fd = -1;
-    }
-}
-
-#define CRED_FUSE_AUDIT_KEY "cred-fuse-bypass"
-
-static struct audit_rule_data *build_base_rule(const char *source_dir) {
-    struct audit_rule_data *rule = audit_rule_create_data();
-    if (!rule) {
-        return NULL;
-    }
-
-    if (audit_rule_syscallbyname_data(rule, "all") < 0) {
-        audit_rule_free_data(rule);
-        return NULL;
-    }
-
-    char dir_filter[PATH_MAX + 8];
-    snprintf(dir_filter, sizeof(dir_filter), "dir=%s", source_dir);
-    if (audit_rule_fieldpair_data(&rule, dir_filter, AUDIT_FILTER_EXIT) < 0) {
-        audit_rule_free_data(rule);
-        return NULL;
-    }
-
-    char perm_filter[32];
-    snprintf(perm_filter, sizeof(perm_filter), "perm=rwa");
-    if (audit_rule_fieldpair_data(&rule, perm_filter, AUDIT_FILTER_EXIT) < 0) {
-        audit_rule_free_data(rule);
-        return NULL;
-    }
-
-    char key_filter[64];
-    snprintf(key_filter, sizeof(key_filter), "key=%s", CRED_FUSE_AUDIT_KEY);
-    if (audit_rule_fieldpair_data(&rule, key_filter, AUDIT_FILTER_EXIT) < 0) {
-        audit_rule_free_data(rule);
-        return NULL;
-    }
-
-    return rule;
-}
-
-static void purge_stale_audit_rules(const char *source_dir) {
-    if (audit_fd < 0 || !source_dir) {
-        return;
-    }
-
-    if (audit_request_rules_list_data(audit_fd) <= 0) {
-        return;
-    }
-
-    struct audit_rule_data *to_delete[64];
-    size_t del_count = 0;
-    size_t dir_len = strlen(source_dir);
-    size_t key_len = strlen(CRED_FUSE_AUDIT_KEY);
-
-    for (int iter = 0; iter < 4096; iter++) {
-        struct pollfd pfd = { .fd = audit_fd, .events = POLLIN };
-        if (poll(&pfd, 1, 200) <= 0) {
-            break;
-        }
-
-        struct audit_reply rep;
-        int rc = audit_get_reply(audit_fd, &rep, GET_REPLY_NONBLOCKING, 0);
-        if (rc <= 0) {
-            break;
-        }
-
-        if (rep.type == NLMSG_DONE || rep.type == NLMSG_ERROR) {
-            break;
-        }
-
-        if (rep.type != AUDIT_LIST_RULES || !rep.ruledata) {
-            continue;
-        }
-
-        const struct audit_rule_data *r = rep.ruledata;
-        if ((r->flags & AUDIT_FILTER_MASK) != AUDIT_FILTER_EXIT) {
-            continue;
-        }
-
-        int dir_matches = 0;
-        int key_matches = 0;
-        int has_pid = 0;
-        uint32_t buf_off = 0;
-
-        for (uint32_t i = 0; i < r->field_count && i < AUDIT_MAX_FIELDS; i++) {
-            uint32_t ftype = r->fields[i] & ~AUDIT_OPERATORS;
-            uint32_t fval = r->values[i];
-
-            int is_str = (ftype == AUDIT_DIR || ftype == AUDIT_WATCH ||
-                          ftype == AUDIT_FILTERKEY || ftype == AUDIT_EXE ||
-                          (ftype >= AUDIT_SUBJ_USER && ftype <= AUDIT_SUBJ_CLR) ||
-                          (ftype >= AUDIT_OBJ_USER && ftype <= AUDIT_OBJ_LEV_HIGH));
-            if (is_str) {
-                if (fval > r->buflen || buf_off > r->buflen - fval) {
-                    break;
-                }
-                if (ftype == AUDIT_DIR && fval == dir_len &&
-                    memcmp(r->buf + buf_off, source_dir, dir_len) == 0) {
-                    dir_matches = 1;
-                } else if (ftype == AUDIT_FILTERKEY && fval == key_len &&
-                           memcmp(r->buf + buf_off, CRED_FUSE_AUDIT_KEY, key_len) == 0) {
-                    key_matches = 1;
-                }
-                buf_off += fval;
-            } else if (ftype == AUDIT_PID) {
-                has_pid = 1;
-            }
-        }
-
-        if (dir_matches && (key_matches || (r->action == AUDIT_NEVER && has_pid)) &&
-            del_count < (sizeof(to_delete) / sizeof(to_delete[0]))) {
-            size_t rule_sz = sizeof(*r) + r->buflen;
-            struct audit_rule_data *copy = malloc(rule_sz);
-            if (copy) {
-                memcpy(copy, r, rule_sz);
-                to_delete[del_count++] = copy;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < del_count; i++) {
-        (void)audit_delete_rule_data(audit_fd, to_delete[i],
-                                     to_delete[i]->flags & AUDIT_FILTER_MASK,
-                                     to_delete[i]->action);
-        free(to_delete[i]);
-    }
-}
-
-static int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add) {
-    if (audit_fd < 0) {
-        return -1;
-    }
-
-    if (add) {
-        purge_stale_audit_rules(source_dir);
-    }
-
-    int rc_exclude = 0;
-    int rc_watch = 0;
-
-    struct audit_rule_data *rule_exclude = build_base_rule(source_dir);
-    if (rule_exclude) {
-        char pid_filter[64];
-        snprintf(pid_filter, sizeof(pid_filter), "pid=%d", daemon_pid);
-        
-        if (audit_rule_fieldpair_data(&rule_exclude, pid_filter, AUDIT_FILTER_EXIT) == 0) {
-            if (add) {
-                rc_exclude = audit_add_rule_data(audit_fd, rule_exclude, AUDIT_FILTER_EXIT, AUDIT_NEVER);
-            } else {
-                rc_exclude = audit_delete_rule_data(audit_fd, rule_exclude, AUDIT_FILTER_EXIT, AUDIT_NEVER);
-            }
-        }
-        audit_rule_free_data(rule_exclude);
-    }
-
-    struct audit_rule_data *rule_watch = build_base_rule(source_dir);
-    if (rule_watch) {
-        if (add) {
-            rc_watch = audit_add_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
-        } else {
-            rc_watch = audit_delete_rule_data(audit_fd, rule_watch, AUDIT_FILTER_EXIT, AUDIT_ALWAYS);
-        }
-        audit_rule_free_data(rule_watch);
-    }
-
-    return (rc_exclude > 0 && rc_watch > 0) ? 0 : -1;
-}
-
 static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_ino_t ino, const char *filename) {
-    int skip_audit = (err == ENOENT && op != NULL &&
-                      (strcmp(op, "lookup") == 0 || strcmp(op, "getattr") == 0));
-
-    if (err > 0 && audit_fd >= 0 && !skip_audit) {
+    if ((err == EACCES || err == EPERM) && audit_is_active()) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
         char *path = NULL;
 
@@ -329,42 +134,8 @@ static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_in
             path = get_inode_path(ino);
         }
 
-        const char *mount_prefix = global_opts.mountpoint ? global_opts.mountpoint : "";
-        if (strcmp(mount_prefix, "/") == 0) {
-            mount_prefix = "";
-        }
-
-        char full_audit_path[PATH_MAX];
-        snprintf(full_audit_path, sizeof(full_audit_path), "%s%s%s%s",
-                 mount_prefix,
-                 path ? path : "",
-                 (path && filename) ? "/" : "",
-                 filename ? filename : "");
-
-        char *encoded_path = audit_encode_nv_string("path", full_audit_path, 0);
-
-        char msg[1024];
-        char errno_str[256];
-
-        strerror_r(err, errno_str, sizeof(errno_str));
-        int ret = snprintf(msg, sizeof(msg),
-                 "op=%s %s uid=%u gid=%u pid=%d res=failed error=\"%s\"",
-                 op,
-                 encoded_path ? encoded_path : "path=?",
-                 ctx->uid, ctx->gid, ctx->pid,
-                 errno_str);
-        free(encoded_path);
-        if (ret >= (int)sizeof(msg)) {
-            syslog(LOG_WARNING, "reply_err_and_audit: audit message truncated");
-        }
-
-        pthread_mutex_lock(&audit_lock);
-        int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 0);
-        int saved_errno = errno;
-        pthread_mutex_unlock(&audit_lock);
-        if (rc < 0) {
-            syslog(LOG_WARNING, "reply_err_and_audit: audit_log_user_message failed: %s", strerror(saved_errno));
-        }
+        audit_log_auth_failure(global_opts.mountpoint, path, filename,
+                               ctx->uid, ctx->gid, ctx->pid, op, err);
 
         if (path) {
             free(path);
@@ -537,34 +308,10 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     fi->fh = (typeof(fi->fh))node;
     close(fd);
 
-    if (audit_fd >= 0) {
+    if (audit_is_active()) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
-
-        const char *mount_prefix = global_opts.mountpoint ? global_opts.mountpoint : "";
-        if (strcmp(mount_prefix, "/") == 0) {
-            mount_prefix = "";
-        }
-
-        char full_audit_path[PATH_MAX];
-        snprintf(full_audit_path, sizeof(full_audit_path), "%s%s", mount_prefix, path);
-        char *encoded_path = audit_encode_nv_string("path", full_audit_path, 0);
-
-        char msg[1024];
-        int ret = snprintf(msg, sizeof(msg),
-                 "op=open %s uid=%u gid=%u pid=%d res=success",
-                 encoded_path ? encoded_path : "path=?",
-                 ctx->uid, ctx->gid, ctx->pid);
-        free(encoded_path);
-        if (ret >= (int)sizeof(msg)) {
-            syslog(LOG_WARNING, "cred_ll_open: audit message truncated");
-        }
-        pthread_mutex_lock(&audit_lock);
-        int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, 1);
-        int saved_errno = errno;
-        pthread_mutex_unlock(&audit_lock);
-        if (rc < 0) {
-            syslog(LOG_WARNING, "cred_ll_open: audit_log_user_message failed: %s", strerror(saved_errno));
-        }
+        audit_log_open_success(global_opts.mountpoint, path,
+                               ctx->uid, ctx->gid, ctx->pid);
     }
 
     free(path);
@@ -1209,7 +956,7 @@ int main(int argc, char *argv[]) {
 
         setup_supervisor_signals(worker_pid);
 
-        if (audit_fd >= 0) {
+        if (audit_is_active()) {
             if (manage_audit_rules(global_opts.source_dir, worker_pid, 1) != 0) {
                 syslog(LOG_WARNING, "Warning: Failed to install kernel audit rules for %s", global_opts.source_dir);
             }
@@ -1223,7 +970,7 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (audit_fd >= 0) {
+        if (audit_is_active()) {
             manage_audit_rules(global_opts.source_dir, worker_pid, 0);
             shutdown_audit_system();
         }
@@ -1317,7 +1064,7 @@ int main(int argc, char *argv[]) {
     _exit(ret);
 
 err_unmount:
-    if (audit_fd >= 0) {
+    if (audit_is_active()) {
         manage_audit_rules(global_opts.source_dir, getpid(), 0);
         shutdown_audit_system();
     }
