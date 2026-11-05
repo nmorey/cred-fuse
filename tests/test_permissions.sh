@@ -74,3 +74,10 @@ if [ "$PERM" != "555" ]; then
     exit 1
 fi
 echo "TEST: Directory permissions masked: Success"
+
+echo "Testing rejection of POSIX ACLs in getxattr..."
+if getfattr -n system.posix_acl_access "${WORKDIR}/credentials/perms.enc" 2>/dev/null; then
+    echo "ERROR: POSIX ACL query succeeded, expected rejection (ENODATA)"
+    exit 1
+fi
+echo "TEST: POSIX ACL rejection: Success"

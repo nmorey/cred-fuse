@@ -535,12 +535,15 @@ done:
     free(rel_path);
 }
 
-/* 8. GETXATTR: Forward POSIX ACL and LSM/SELinux extended attributes */
+/* 8. GETXATTR: Forward LSM/SELinux extended attributes; reject unauthenticated POSIX ACLs */
 static void cred_ll_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
-    if (!name ||
-        (strcmp(name, "system.posix_acl_access") != 0 &&
-         strcmp(name, "system.posix_acl_default") != 0 &&
-         strncmp(name, "security.", 9) != 0)) {
+    /*
+     * Explicitly reject POSIX ACLs (system.posix_acl_access / system.posix_acl_default).
+     * The cryptographic envelope binds only standard mode bits (07777) into AAD;
+     * POSIX ACLs on backing files are unauthenticated and must not override DAC mode checks.
+     * Only allow security.* namespace attributes (e.g. SELinux, SMACK).
+     */
+    if (!name || strncmp(name, "security.", 9) != 0) {
         fuse_reply_err(req, ENODATA);
         return;
     }
