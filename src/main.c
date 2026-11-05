@@ -931,8 +931,6 @@ int main(int argc, char *argv[]) {
     fuse_daemonize(opts.foreground);
     openlog("mount.cred-fuse", LOG_PID | (opts.foreground ? LOG_PERROR : 0), LOG_DAEMON);
 
-    init_audit_system();
-
     pid_t supervisor_pid = getpid();
     pid_t worker_pid = fork();
     if (worker_pid < 0) {
@@ -961,6 +959,8 @@ int main(int argc, char *argv[]) {
 
         setup_supervisor_signals(worker_pid);
 
+        /* Initialize dedicated audit connection in supervisor for kernel rule management */
+        init_audit_system();
         if (audit_is_active()) {
             if (manage_audit_rules(global_opts.source_dir, worker_pid, 1) != 0) {
                 syslog(LOG_WARNING, "Warning: Failed to install kernel audit rules for %s", global_opts.source_dir);
@@ -1014,6 +1014,9 @@ int main(int argc, char *argv[]) {
     if (getppid() != supervisor_pid) {
         _exit(1);
     }
+
+    /* Initialize worker's dedicated audit connection for user event logging */
+    init_audit_system();
 
     struct rlimit memlock_rlim = { RLIM_INFINITY, RLIM_INFINITY };
     if (setrlimit(RLIMIT_MEMLOCK, &memlock_rlim) != 0) {
