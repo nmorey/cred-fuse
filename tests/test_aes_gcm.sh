@@ -46,6 +46,34 @@ if "${CRED_DECRYPT}" -c 0x81010002 -p "gcm_test.enc" -m 0600 -T "$TCTI_ARG" -i "
 fi
 echo "TEST: cred-decrypt path/mode binding verification: Success"
 
+echo "Testing cred-encrypt atomic creation (refusal to overwrite existing file)..."
+echo -n "test" > "${WORKDIR}/plain_sec02.txt"
+if "${CRED_ENCRYPT}" -k "${WORKDIR}/tpm_pub.pem" -p "gcm_test.enc" -m 0644 -i "${WORKDIR}/plain_sec02.txt" -o "${WORKDIR}/source/gcm_test.enc" >/dev/null 2>&1; then
+    echo "ERROR: cred-encrypt overwrote an existing file without O_EXCL rejection"
+    exit 1
+fi
+echo "TEST: cred-encrypt refusal to overwrite existing file: Success"
+
+echo "Testing cred-encrypt default restrictive file mode (0600)..."
+"${CRED_ENCRYPT}" -k "${WORKDIR}/tpm_pub.pem" -p "default_mode.enc" -m 0644 -i "${WORKDIR}/plain_sec02.txt" -o "${WORKDIR}/source/default_mode.enc"
+DEFAULT_MODE=$(stat -c "%a" "${WORKDIR}/source/default_mode.enc")
+if [ "$DEFAULT_MODE" != "600" ]; then
+    echo "ERROR: cred-encrypt created file with insecure mode $DEFAULT_MODE (expected 600)"
+    exit 1
+fi
+rm -f "${WORKDIR}/source/default_mode.enc"
+echo "TEST: cred-encrypt default mode 0600: Success"
+
+echo "Testing cred-encrypt with --set-mode (-s)..."
+"${CRED_ENCRYPT}" -k "${WORKDIR}/tpm_pub.pem" -p "set_mode.enc" -m 0400 -s -i "${WORKDIR}/plain_sec02.txt" -o "${WORKDIR}/source/set_mode.enc"
+SET_MODE=$(stat -c "%a" "${WORKDIR}/source/set_mode.enc")
+if [ "$SET_MODE" != "400" ]; then
+    echo "ERROR: cred-encrypt with -s created file with mode $SET_MODE (expected 400)"
+    exit 1
+fi
+rm -f "${WORKDIR}/source/set_mode.enc" "${WORKDIR}/plain_sec02.txt"
+echo "TEST: cred-encrypt --set-mode: Success"
+
 # 2. Create tampered and swapped envelopes
 python3 -c "
 with open('${WORKDIR}/source/gcm_test.enc', 'rb') as f:

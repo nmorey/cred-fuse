@@ -35,10 +35,10 @@ static void print_usage(const char *prog) {
             "  -k, --pubkey <path>     RSA-2048/4096 public key file (PEM or TSS2 TPM2B_PUBLIC)\n"
             "  -p, --path <rel_path>   Relative path in the mounted FUSE filesystem\n"
             "  -m, --mode <octal_mode> Target permissions in octal (e.g. 0600, 0400) bound into cryptographic AAD\n"
-            "                          (does not modify file permissions on disk unless --set-mode is passed)\n"
+            "                          (output file created with 0600 unless --set-mode is passed)\n"
             "\n"
             "Optional arguments:\n"
-            "  -s, --set-mode          Apply the specified octal mode directly to the output file on disk via chmod\n"
+            "  -s, --set-mode          Apply the specified octal mode directly to the output file on disk\n"
             "  -i, --input <path>      Input plaintext file (default: stdin)\n"
             "  -o, --output <path>     Output encrypted file (default: stdout)\n"
             "  -h, --help              Show this help message\n",
@@ -288,9 +288,14 @@ int main(int argc, char *argv[]) {
     }
 
     if (out_path) {
-        out_fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        mode_t create_mode = set_mode ? (mode & 07777) : 0600;
+        out_fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, create_mode);
         if (out_fd < 0) {
-            fprintf(stderr, "Error: Cannot open output file '%s': %s\n", out_path, strerror(errno));
+            if (errno == EEXIST) {
+                fprintf(stderr, "Error: Output file '%s' already exists. Refusing to overwrite for security.\n", out_path);
+            } else {
+                fprintf(stderr, "Error: Cannot create output file '%s': %s\n", out_path, strerror(errno));
+            }
             goto cleanup;
         }
         if (set_mode) {
@@ -331,6 +336,11 @@ cleanup:
     if (pctx) EVP_PKEY_CTX_free(pctx);
     if (pkey) EVP_PKEY_free(pkey);
     if (in_path && in_fd >= 0) close(in_fd);
-    if (out_path && out_fd >= 0) close(out_fd);
+    if (out_path && out_fd >= 0) {
+        close(out_fd);
+        if (ret != 0) {
+            unlink(out_path);
+        }
+    }
     return ret;
 }
