@@ -697,10 +697,12 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    // Scrub TCTI environment variables so libtss2-tctildr cannot be hijacked when -o tcti is omitted
+    // Scrub TCTI and D-Bus environment variables so libtss2-tctildr and tabrmd cannot be hijacked
     unsetenv("TSS2_TCTI");
     unsetenv("TPM2TOOLS_TCTI");
     unsetenv("TCTI");
+    unsetenv("DBUS_SYSTEM_BUS_ADDRESS");
+    unsetenv("DBUS_SESSION_BUS_ADDRESS");
 
     // Disable core dumps
     if (prctl(PR_SET_DUMPABLE, 0) != 0) {

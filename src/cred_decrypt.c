@@ -91,6 +91,8 @@ int main(int argc, char *argv[]) {
     unsetenv("TSS2_TCTI");
     unsetenv("TPM2TOOLS_TCTI");
     unsetenv("TCTI");
+    unsetenv("DBUS_SYSTEM_BUS_ADDRESS");
+    unsetenv("DBUS_SESSION_BUS_ADDRESS");
 
     if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
         mlockall_active = 1;
