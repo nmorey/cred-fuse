@@ -42,6 +42,8 @@
 #include <libaudit.h>
 #include <limits.h>
 #include <syslog.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #include "decryption.h"
 #include "inode.h"
@@ -882,19 +884,16 @@ static int drop_privileges(void) {
 
     /*
      * Design note on capabilities:
-     * Active event loop operations only require DAC_READ_SEARCH, IPC_LOCK, and AUDIT_WRITE.
-     * AUDIT_CONTROL and SYS_ADMIN are dropped from the effective set during runtime, but
-     * are retained in the permitted set because the daemon process must self-clean its
-     * audit exclude netlink rules and perform unmount (umount2) upon shutdown.
-     * Since PR_SET_NO_NEW_PRIVS is active, external setuid helpers (e.g., fusermount3)
-     * cannot be used for cleanup.
+     * In the worker process, active event loop operations only require DAC_READ_SEARCH,
+     * IPC_LOCK, and AUDIT_WRITE.
+     * CAP_SYS_ADMIN and CAP_AUDIT_CONTROL are completely dropped from effective, permitted,
+     * and bounding sets.
+     * Shutdown cleanup (audit rules and unmounting) is handled by the isolated supervisor process.
      */
     uint64_t eff_mask = (1ULL << CAP_DAC_READ_SEARCH) |
                         (1ULL << CAP_IPC_LOCK) |
                         (1ULL << CAP_AUDIT_WRITE);
-    uint64_t perm_mask = eff_mask |
-                         (1ULL << CAP_AUDIT_CONTROL) |
-                         (1ULL << CAP_SYS_ADMIN);
+    uint64_t perm_mask = eff_mask;
 
     for (int cap = 0; cap <= CAP_LAST_CAP; cap++) {
         if (cap < 64 && (perm_mask & (1ULL << cap))) {
@@ -912,6 +911,27 @@ static int drop_privileges(void) {
     }
 
     return 0;
+}
+
+static pid_t g_supervisor_worker_pid = -1;
+
+static void supervisor_sig_forward(int sig) {
+    if (g_supervisor_worker_pid > 0) {
+        kill(g_supervisor_worker_pid, sig);
+    }
+}
+
+static void setup_supervisor_signals(pid_t worker_pid) {
+    g_supervisor_worker_pid = worker_pid;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = supervisor_sig_forward;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
 }
 
 int main(int argc, char *argv[]) {
@@ -1160,10 +1180,87 @@ int main(int argc, char *argv[]) {
     openlog("mount.cred-fuse", LOG_PID | (opts.foreground ? LOG_PERROR : 0), LOG_DAEMON);
 
     init_audit_system();
-    if (audit_fd >= 0) {
-        if (manage_audit_rules(global_opts.source_dir, getpid(), 1) != 0) {
-            syslog(LOG_WARNING, "Warning: Failed to install kernel audit rules for %s", global_opts.source_dir);
+
+    pid_t supervisor_pid = getpid();
+    pid_t worker_pid = fork();
+    if (worker_pid < 0) {
+        syslog(LOG_ERR, "Failed to fork supervisor/worker: %s", strerror(errno));
+        ret = 1;
+        goto err_unmount;
+    }
+
+    if (worker_pid > 0) {
+        /*
+         * ==========================================
+         * SUPERVISOR PROCESS (Parent)
+         * ==========================================
+         * The supervisor remains dormant outside the FUSE request loop.
+         * It handles no filesystem I/O, caches no secrets, and holds zero keys.
+         * Its sole responsibility is forwarding termination signals to the worker,
+         * waiting for worker exit, cleaning up kernel audit rules, and unmounting.
+         */
+#ifdef CRED_FUSE_ENABLE_SWTPM
+        if (geteuid() == 0)
+#endif
+        {
+            uint64_t sup_mask = (1ULL << CAP_SYS_ADMIN) | (1ULL << CAP_AUDIT_CONTROL);
+            (void)set_process_caps(sup_mask, sup_mask);
         }
+
+        setup_supervisor_signals(worker_pid);
+
+        if (audit_fd >= 0) {
+            if (manage_audit_rules(global_opts.source_dir, worker_pid, 1) != 0) {
+                syslog(LOG_WARNING, "Warning: Failed to install kernel audit rules for %s", global_opts.source_dir);
+            }
+        }
+
+        int status = 0;
+        while (waitpid(worker_pid, &status, 0) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        if (audit_fd >= 0) {
+            manage_audit_rules(global_opts.source_dir, worker_pid, 0);
+            shutdown_audit_system();
+        }
+
+        closelog();
+        fuse_session_unmount(se);
+        fuse_remove_signal_handlers(se);
+        fuse_session_destroy(se);
+
+        free(opts.mountpoint);
+        if (global_opts.source_dir_fd >= 0) {
+            close(global_opts.source_dir_fd);
+        }
+        free(global_opts.mountpoint);
+        free(global_opts.source_dir);
+        free(global_opts.tpm_handle_str);
+        free(global_opts.tpm_pubkey);
+        free(global_opts.tcti);
+        fuse_opt_free_args(&args);
+
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        }
+        if (WIFSIGNALED(status)) {
+            return 128 + WTERMSIG(status);
+        }
+        return 0;
+    }
+
+    /*
+     * ==========================================
+     * WORKER PROCESS (Child)
+     * ==========================================
+     */
+    (void)prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+    if (getppid() != supervisor_pid) {
+        _exit(1);
     }
 
     struct rlimit memlock_rlim = { RLIM_INFINITY, RLIM_INFINITY };
@@ -1188,8 +1285,11 @@ int main(int argc, char *argv[]) {
     }
 
     if (drop_privileges() != 0) {
-        ret = 1;
-        goto err_unmount;
+        syslog(LOG_ERR, "Worker failed to drop privileges, terminating.");
+        cleanup_inodes();
+        shutdown_audit_system();
+        closelog();
+        _exit(1);
     }
 
     atexit(cleanup_inodes);
@@ -1200,8 +1300,10 @@ int main(int argc, char *argv[]) {
     } else {
         config = fuse_loop_cfg_create();
         if (config == NULL) {
-            ret = 1;
-            goto err_unmount;
+            cleanup_inodes();
+            shutdown_audit_system();
+            closelog();
+            _exit(1);
         }
         fuse_loop_cfg_set_clone_fd(config, opts.clone_fd);
         fuse_loop_cfg_set_max_threads(config, opts.max_threads);
@@ -1209,18 +1311,12 @@ int main(int argc, char *argv[]) {
         fuse_loop_cfg_destroy(config);
     }
 
+    cleanup_inodes();
+    shutdown_audit_system();
+    closelog();
+    _exit(ret);
+
 err_unmount:
-#ifdef CRED_FUSE_ENABLE_SWTPM
-    if (geteuid() == 0)
-#endif
-    {
-        uint64_t shutdown_mask = (1ULL << CAP_DAC_READ_SEARCH) |
-                                 (1ULL << CAP_IPC_LOCK) |
-                                 (1ULL << CAP_AUDIT_WRITE) |
-                                 (1ULL << CAP_AUDIT_CONTROL) |
-                                 (1ULL << CAP_SYS_ADMIN);
-        (void)set_process_caps(shutdown_mask, shutdown_mask);
-    }
     if (audit_fd >= 0) {
         manage_audit_rules(global_opts.source_dir, getpid(), 0);
         shutdown_audit_system();
