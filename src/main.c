@@ -1032,8 +1032,17 @@ int main(int argc, char *argv[]) {
         mlockall_active = 1;
     } else {
         mlockall_active = 0;
+#ifdef CRED_FUSE_TESTING
         syslog(LOG_WARNING, "Warning: Failed to lock memory in daemon (mlockall: %s). Falling back to individual mlock calls.",
                strerror(errno));
+#else
+        syslog(LOG_ERR, "Fatal: Failed to lock memory in daemon (mlockall: %s). Refusing to run with unlocked memory.",
+               strerror(errno));
+        cleanup_inodes();
+        shutdown_audit_system();
+        closelog();
+        _exit(1);
+#endif
     }
 
     if (drop_privileges() != 0) {
