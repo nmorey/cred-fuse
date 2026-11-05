@@ -220,9 +220,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (out_path) {
-        out_fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        out_fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (out_fd < 0) {
-            fprintf(stderr, "Error: Cannot open output file '%s': %s\n", out_path, strerror(errno));
+            if (errno == EEXIST) {
+                fprintf(stderr, "Error: Output file '%s' already exists. Refusing to overwrite for security.\n", out_path);
+            } else {
+                fprintf(stderr, "Error: Cannot create output file '%s': %s\n", out_path, strerror(errno));
+            }
             goto cleanup;
         }
     }
