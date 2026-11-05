@@ -278,15 +278,49 @@ static int safe_audit_log(const char *msg, int res) {
 
 static void format_full_path(char *dst, size_t dst_sz,
                              const char *mountpoint, const char *path, const char *filename) {
-    const char *mount_prefix = mountpoint ? mountpoint : "";
-    if (strcmp(mount_prefix, "/") == 0) {
-        mount_prefix = "";
+    if (!dst || dst_sz == 0) {
+        return;
     }
-    snprintf(dst, dst_sz, "%s%s%s%s",
-             mount_prefix,
-             path ? path : "",
-             (path && filename) ? "/" : "",
-             filename ? filename : "");
+
+    size_t mlen = 0;
+    if (mountpoint && strcmp(mountpoint, "/") != 0) {
+        mlen = strlen(mountpoint);
+        while (mlen > 0 && mountpoint[mlen - 1] == '/') {
+            mlen--;
+        }
+    }
+
+    const char *p = path ? path : "";
+    while (*p == '/') {
+        p++;
+    }
+    size_t plen = strlen(p);
+    while (plen > 0 && p[plen - 1] == '/') {
+        plen--;
+    }
+
+    const char *fn = filename ? filename : "";
+    while (*fn == '/') {
+        fn++;
+    }
+    size_t fnlen = strlen(fn);
+    while (fnlen > 0 && fn[fnlen - 1] == '/') {
+        fnlen--;
+    }
+
+    if (plen > 0 && fnlen > 0) {
+        snprintf(dst, dst_sz, "%.*s/%.*s/%.*s", (int)mlen, mountpoint ? mountpoint : "", (int)plen, p, (int)fnlen, fn);
+    } else if (plen > 0) {
+        snprintf(dst, dst_sz, "%.*s/%.*s", (int)mlen, mountpoint ? mountpoint : "", (int)plen, p);
+    } else if (fnlen > 0) {
+        snprintf(dst, dst_sz, "%.*s/%.*s", (int)mlen, mountpoint ? mountpoint : "", (int)fnlen, fn);
+    } else {
+        if (mlen > 0) {
+            snprintf(dst, dst_sz, "%.*s", (int)mlen, mountpoint);
+        } else {
+            snprintf(dst, dst_sz, "/");
+        }
+    }
 }
 
 void audit_log_open_success(const char *mountpoint, const char *path,
