@@ -1,4 +1,33 @@
 -------------------------------------------------------------------
+Fri Nov 06 10:45:00 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
+
+- Release 2.1
+  - Privilege separation and process isolation:
+    - Split daemon into supervisor and worker processes, dropping
+      CAP_SYS_ADMIN and applying PR_SET_NO_NEW_PRIVS in the worker
+    - Require root execution, enforce non-writable source ownership,
+      and scrub D-Bus and TSS2 environment variables
+    - Enforce memory locking (mlockall) in production builds
+  - Path traversal and filesystem security:
+    - Harden path resolution using openat2 flags
+    - Enforce nosuid, nodev, and noexec mount options, sanitize file
+      mode bits, and reject unauthenticated POSIX ACLs in getxattr
+  - Directory and inode handling:
+    - Populate directory entry types in readdir to prevent lookup storms
+      under GNU coreutils ls
+    - Enforce bounded readdir buffers, robust offset tracking, and proper
+      parent directory (..) inode resolution
+  - Resource control and DoS mitigation:
+    - Enforce per-UID open file tracking to prevent global exhaustion
+    - Lower default worker thread count to avoid TPM hardware starvation
+  - Audit subsystem overhaul:
+    - Modularize audit subsystem with multi-ABI syscall monitoring,
+      supervisor-worker socket isolation, rate limiting, and timeouts
+  - CLI utility improvements:
+    - Add atomic file creation and restrictive default permissions (0600)
+      to cred-encrypt and cred-decrypt, with support for custom file modes
+
+-------------------------------------------------------------------
 Fri Oct 16 07:45:00 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
 
 - Release 2.0
