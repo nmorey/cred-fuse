@@ -497,8 +497,9 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
             continue;
         }
 
+        struct stat tmp_st;
+        memset(&tmp_st, 0, sizeof(tmp_st));
         if (de->d_type == DT_REG || de->d_type == DT_UNKNOWN) {
-            struct stat tmp_st;
             int fd = open_and_validate_path(entry_rel_path, &tmp_st);
             if (fd < 0) {
                 continue; // Skip invalid, unmanaged, or symlinked files cleanly
@@ -524,6 +525,13 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         struct stat entry_st;
         memset(&entry_st, 0, sizeof(entry_st));
         entry_st.st_ino = entry_ino;
+        if (de->d_type == DT_DIR) {
+            entry_st.st_mode = S_IFDIR;
+        } else if (de->d_type == DT_REG) {
+            entry_st.st_mode = S_IFREG;
+        } else if (de->d_type == DT_UNKNOWN) {
+            entry_st.st_mode = S_ISDIR(tmp_st.st_mode) ? S_IFDIR : S_IFREG;
+        }
         fuse_add_direntry(req, buf + used, size - used, de->d_name, &entry_st, this_idx + 1);
         used += entry_size;
     }
