@@ -774,7 +774,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
 
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
-        .keyBits = { .aes = 128 },
+        .keyBits = { .aes = 256 },
         .mode = { .aes = TPM2_ALG_CFB }
     };
     TPMA_SESSION session_attrs = TPMA_SESSION_DECRYPT | TPMA_SESSION_ENCRYPT;
