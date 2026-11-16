@@ -50,13 +50,15 @@ struct pinned_tpm_key {
     uint8_t modulus[TPM2_RSA4096_KEY_BYTES];
     size_t modulus_len;
     TPM2B_NAME name;
+    uint16_t session_aes_bits;
 };
 
 static struct pinned_tpm_key pinned_key = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .modulus = {0},
     .modulus_len = 0,
-    .name = {0}
+    .name = {0},
+    .session_aes_bits = 0
 };
 
 static long system_page_size = 4096;
@@ -785,9 +787,10 @@ int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     }
     memcpy(label.buffer, oaep_label, 33);
 
+    uint16_t aes_bits = pinned_key.session_aes_bits ? pinned_key.session_aes_bits : 256;
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
-        .keyBits = { .aes = 256 },
+        .keyBits = { .aes = aes_bits },
         .mode = { .aes = TPM2_ALG_CFB }
     };
     TPMA_SESSION session_attrs = TPMA_SESSION_DECRYPT | TPMA_SESSION_ENCRYPT;
@@ -830,6 +833,22 @@ int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
                                NULL, TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
                                &session_handle);
+    if (rc != TSS2_RC_SUCCESS && aes_bits == 256) {
+        /*
+         * Many discrete hardware TPMs only support 128-bit AES for transport auth sessions.
+         * Detect on first attempt and remember for all subsequent operations.
+         */
+        symmetric.keyBits.aes = 128;
+        rc = Esys_StartAuthSession(esys_ctx, key_handle, ESYS_TR_NONE,
+                                   ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                                   NULL, TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
+                                   &session_handle);
+        if (rc == TSS2_RC_SUCCESS) {
+            pinned_key.session_aes_bits = 128;
+        }
+    } else if (rc == TSS2_RC_SUCCESS && pinned_key.session_aes_bits == 0) {
+        pinned_key.session_aes_bits = 256;
+    }
     if (rc != TSS2_RC_SUCCESS) {
         syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_StartAuthSession failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         ret_err = -EACCES;
