@@ -58,12 +58,13 @@ target_link_libraries(cred-decrypt PRIVATE
     ${TSS2_LIBRARIES}
 )
 
-install(TARGETS mount.cred-fuse DESTINATION sbin)
-install(TARGETS cred-encrypt cred-decrypt DESTINATION bin)
-
 option(BUILD_TESTING "Build the testing tree and enable swtpm TCTI support" OFF)
 
-if(BUILD_TESTING)
+if(NOT BUILD_TESTING)
+    install(TARGETS mount.cred-fuse DESTINATION sbin)
+    install(TARGETS cred-encrypt cred-decrypt DESTINATION bin)
+else()
+    message(STATUS "Building testing targets with swtpm support enabled. System installation is disabled for test builds.")
     enable_testing()
     target_compile_definitions(mount.cred-fuse PRIVATE CRED_FUSE_ENABLE_SWTPM=1 CRED_FUSE_TESTING=1)
     target_compile_definitions(cred-encrypt PRIVATE CRED_FUSE_ENABLE_SWTPM=1 CRED_FUSE_TESTING=1)
