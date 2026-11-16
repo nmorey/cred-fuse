@@ -228,7 +228,9 @@ int manage_audit_rules(const char *source_dir, pid_t daemon_pid, int add) {
 
 /*
  * Token bucket rate-limited netlink logger (SEC-04).
- * Limits events to 20 tokens/sec with a burst allowance of 50.
+ * Limits success events to 20 tokens/sec with a burst allowance of 50.
+ * Authorization failures (res == 0) are always logged and never suppressed
+ * by high success open rates.
  */
 static int safe_audit_log(const char *msg, int res) {
     if (!msg) {
@@ -243,6 +245,7 @@ static int safe_audit_log(const char *msg, int res) {
 
     static double tokens = 50.0;
     static struct timespec last_time = {0, 0};
+    static unsigned int dropped_count = 0;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -260,11 +263,20 @@ static int safe_audit_log(const char *msg, int res) {
         }
     }
 
-    if (tokens < 1.0) {
+    if (res != 0 && tokens < 1.0) {
+        dropped_count++;
         pthread_mutex_unlock(&audit_lock);
-        return -1; /* Rate limited: drop message to prevent netlink queue exhaustion */
+        return -1; /* Rate limited success event */
     }
-    tokens -= 1.0;
+
+    if (res != 0) {
+        tokens -= 1.0;
+    }
+
+    if (dropped_count > 0) {
+        syslog(LOG_WARNING, "safe_audit_log: %u success audit events were dropped due to rate limiting", dropped_count);
+        dropped_count = 0;
+    }
 
     int rc = audit_log_user_message(audit_fd, AUDIT_TRUSTED_APP, msg, NULL, NULL, NULL, res);
     int saved_errno = errno;
