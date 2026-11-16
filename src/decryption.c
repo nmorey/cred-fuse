@@ -871,7 +871,7 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     }
 out_msg:
     if (message) {
-        OPENSSL_cleanse(message->buffer, sizeof(message->buffer));
+        OPENSSL_cleanse(message, sizeof(*message));
         Esys_Free(message);
     }
 out_session:
@@ -984,6 +984,7 @@ static int do_aes_decrypt(const uint8_t *iv,
     }
 
     EVP_CIPHER_CTX_free(ctx);
+    OPENSSL_cleanse(tag_buf, sizeof(tag_buf));
 
     out->len = (size_t)len1 + (size_t)len2;
     out->allocated_size = alloc_sz;
@@ -996,6 +997,7 @@ static int do_aes_decrypt(const uint8_t *iv,
     free_munlock(plain, alloc_sz);
  decrypt_init_err:
     EVP_CIPHER_CTX_free(ctx);
+    OPENSSL_cleanse(tag_buf, sizeof(tag_buf));
     ERR_clear_error();
     return ret_err;
 }
@@ -1064,6 +1066,7 @@ int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
 
     r = do_aes_decrypt(iv, tag, ciphertext, ciphertext_len, aad, &eph_key, out);
     clean_decrypted_node(&eph_key);
+    OPENSSL_cleanse(aad, sizeof(aad));
     return r;
 }
 
