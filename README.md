@@ -114,7 +114,7 @@ cred-decrypt -c 0x81010002 -k /etc/credstore/tpm_pub.pem -p service/db_pass.cred
 - `<mount_point>`: Target directory where decrypted credentials will be exposed.
 - `-o ro,default_permissions`: Required mount flags enforcing read-only access and kernel VFS permission checks.
 - `-o tpm_handle=<hex>`: Persistent TPM handle housing the RSA decryption key (e.g., `0x81010002`).
-- `-o tpm_pubkey=<path>`: (Optional, recommended) Path to expected TPM public key (PEM or `TPM2B_PUBLIC`) to pin at startup.
+- `-o tpm_pubkey=<path>`: Path to expected TPM public key (PEM or `TPM2B_PUBLIC`) to pin at startup (required).
 - `-o tcti=<tcti>`: (Optional) TCTI specification (`device` / `device:/dev/tpmrm0` or `tabrmd`). Defaults to `device:/dev/tpmrm0`.
 - `-o max_open_files=<N>`: (Optional) Maximum concurrently open files (Default: `1024`).
 - `-o max_file_size=<bytes>`: (Optional) Maximum plaintext credential size in bytes (Default: `65536` / 64 KiB).
@@ -132,7 +132,7 @@ cred-fuse#/etc/credstore.encrypted /credentials fuse ro,allow_other,default_perm
 
 ## Testing
 
-The test suite spins up an isolated software TPM (`swtpm`) over a local UNIX socket and exercises `cred-encrypt`, `cred-decrypt`, and `mount.cred-fuse` across 14 test suites (requires configuring with `-DBUILD_TESTING=ON`):
+The test suite spins up an isolated software TPM (`swtpm`) over a local UNIX socket and exercises `cred-encrypt`, `cred-decrypt`, and `mount.cred-fuse` across 15 test suites (requires configuring with `-DBUILD_TESTING=ON`):
 ```bash
 cmake -B build -DBUILD_TESTING=ON
 cmake --build build

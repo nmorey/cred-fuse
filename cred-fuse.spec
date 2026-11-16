@@ -40,7 +40,7 @@ Requires:       tpm2.0-abrmd
 %description
 cred-fuse is a read-only FUSE filesystem and accompanying CLI toolset
 (cred-encrypt, cred-decrypt) that dynamically decrypts and exposes
-TPM-bound hybrid envelope (CRED_ENV v1: RSA-OAEP-SHA256 + HKDF-SHA256 +
+TPM-bound hybrid envelope (CRED_ENV v1: RSA-OAEP-SHA256 +
 AES-256-GCM) credentials from an encrypted backing store while enforcing
 POSIX DAC access controls and cryptographic metadata binding.
 
