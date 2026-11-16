@@ -11,7 +11,7 @@ It communicates directly with the TPM 2.0 via `tss2-esys` and performs symmetric
 - **TPM Key Pinning & Verification**: On startup, `mount.cred-fuse` validates the TPM handle's `TPMA_OBJECT` attributes (`fixedTPM`, `sensitiveDataOrigin`, `decrypt`, and not `restricted`), optionally verifies it against a pinned public key (`-o tpm_pubkey=<path>`), and verifies the TPM object's cryptographic `Name` on every decryption to prevent TPM handle substitution.
 - **Locked In-Memory Buffers & Auditd Integration**: Plaintext payloads are held exclusively in `mlock`-protected buffers that are zeroized (`OPENSSL_cleanse`) on release, while `libaudit` watches the backing store and logs credential access and errors.
 
-## Cryptographic Design (`CRED_ENV` v1)
+## Cryptographic Design (`CRED_ENV` v2)
 
 ### Binary Envelope Format
 All credentials use a single binary layout regardless of size (from 1 byte up to `max_file_size`, default 64 KiB):
@@ -19,9 +19,9 @@ All credentials use a single binary layout regardless of size (from 1 byte up to
 | Offset | Size (Bytes) | Field | Description |
 | :--- | :--- | :--- | :--- |
 | `0` | `8` | `magic` | ASCII `"CRED_ENV"` (`0x43 0x52 0x45 0x44 0x5F 0x45 0x4E 0x56`) |
-| `8` | `8` | `version` | `uint64_t` big-endian format version (`1`) |
+| `8` | `8` | `version` | `uint64_t` big-endian format version (`2`) |
 | `16` | `2` | `rsa_ct_len` | `uint16_t` big-endian RSA ciphertext length (`256` for RSA-2048 or `512` for RSA-4096) |
-| `18` | `rsa_ct_len` | `rsa_ciphertext` | `RSA-OAEP-SHA256(TPM_PubKey, pre_key[32])` |
+| `18` | `rsa_ct_len` | `rsa_ciphertext` | `RSA-OAEP-SHA256(TPM_PubKey, eph_secret[32], label)` |
 | `18 + rsa_ct_len` | `12` | `iv` | 96-bit random AES-GCM nonce (`RAND_bytes`) |
 | `30 + rsa_ct_len` | `16` | `tag` | 128-bit AES-256-GCM authentication tag |
 | `46 + rsa_ct_len` | `N` (`>= 1`) | `ciphertext` | AES-256-GCM encrypted payload (same byte length `N` as plaintext) |
@@ -31,20 +31,22 @@ $$\text{Plaintext Size} = \text{st\_size} - (46 + \text{rsa\_ct\_len})$$
 
 ### Encryption (`cred-encrypt`)
 Encryption requires only the target host's TPM RSA public key (PEM `SubjectPublicKeyInfo` or TSS2 `TPM2B_PUBLIC` binary format from `tpm2_readpublic`) and can run completely offline without a TPM:
-1. Generate a fresh 32-byte random ephemeral key `eph_key` and a 12-byte random `iv` via `RAND_bytes()`.
-2. Construct the Additional Authenticated Data (AAD) string:
-   $$\text{AAD} = \text{rel\_path} \parallel \text{":"} \parallel \text{mode\_octal}$$
-   where `rel_path` has leading slashes stripped and `mode_octal` is the 4-digit octal permission mode (e.g., `secret.cred:0600`).
-3. Compute the RSA-OAEP label as the 32-character lowercase hex encoding of the first 16 bytes of $\text{SHA-256}(\text{AAD})$, cryptographically binding the encryption to the file path and permissions.
-4. Encrypt `eph_key` with the TPM RSA public key using `RSA-OAEP` (`SHA-256` digest, `MGF1-SHA256`, and the computed OAEP label).
-5. Encrypt the plaintext with `AES-256-GCM(eph_key, iv, AAD)` using `eph_key` directly as the 256-bit symmetric key, and write the envelope atomically.
+1. Generate a fresh 32-byte random ephemeral secret `eph_secret` and a 12-byte random `iv` via `RAND_bytes()`.
+2. Construct the binary Additional Authenticated Data (AAD):
+   $$\text{AAD} = \text{magic[8]} \parallel \text{version[8]} \parallel \text{rsa\_ct\_len[2]} \parallel \text{ciphertext\_len[4]} \parallel \text{iv[12]} \parallel \text{rel\_path} \parallel \text{":"} \parallel \text{mode\_octal}$$
+3. Compute the RSA-OAEP label as the 32-character lowercase hex encoding of the first 16 bytes of $\text{SHA-256}(\text{AAD})$, cryptographically binding the encryption to the file path, permissions, and complete header structure.
+4. Encrypt `eph_secret` with the TPM RSA public key using `RSA-OAEP` (`SHA-256` digest, `MGF1-SHA256`, and the computed OAEP label).
+5. Derive the 256-bit symmetric key using `HKDF-SHA256(eph_secret, salt=iv, info="CRED_ENV_v2_AES256GCM")`.
+6. Encrypt the plaintext with `AES-256-GCM(aes_key, iv, AAD)` and write the envelope atomically via temporary file and POSIX rename.
 
 ### Decryption (`mount.cred-fuse` & `cred-decrypt`)
-1. Parse and validate the 18-byte `CRED_ENV` v1 header and verify `ciphertext_len` (`1 <= N <= max_file_size`).
+1. Parse and validate the 18-byte `CRED_ENV` header and verify version (`CRED_ENV_CUR_VERSION = 2`) and `ciphertext_len` (`1 <= N <= max_file_size`).
 2. Verify the TPM persistent handle's cryptographic `Name` via `Esys_ReadPublic`.
-3. Reconstruct AAD from the file's relative path and on-disk mode (`rel_path:mode_octal`), and compute the expected RSA-OAEP label.
-4. Unwrap `eph_key` inside the hardware TPM via `Esys_RSA_Decrypt` (`TPM2_ALG_OAEP`, `TPM2_ALG_SHA256`, using the OAEP label).
-5. Verify the authentication tag and decrypt the ciphertext with `AES-256-GCM(eph_key, iv, AAD)`.
+3. Reconstruct binary AAD and compute the expected RSA-OAEP label.
+4. Unwrap `eph_secret` inside the hardware TPM via `Esys_RSA_Decrypt` (`TPM2_ALG_OAEP`, `TPM2_ALG_SHA256`, using the OAEP label).
+5. Derive `aes_key` via `HKDF-SHA256(eph_secret, salt=iv, info="CRED_ENV_v2_AES256GCM")`.
+6. Verify the authentication tag and decrypt the ciphertext with `AES-256-GCM(aes_key, iv, AAD)`.
+*(Note: `cred-decrypt` also supports legacy `v1` envelopes for migration pipelines).*
 
 ## Building & Installation
 

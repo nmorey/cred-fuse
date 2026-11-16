@@ -21,6 +21,7 @@
 #include <openssl/crypto.h>
 
 #include "decryption.h"
+#include "envelope.h"
 
 struct cred_fuse_opts global_opts = {0};
 int mlockall_active = 0;
@@ -110,6 +111,7 @@ int main(int argc, char *argv[]) {
     const char *in_path = NULL;
     const char *out_path = NULL;
     int set_mode = 0;
+    uint64_t format_version = CRED_ENV_CUR_VERSION;
 
     static const struct option long_opts[] = {
         {"pubkey",   required_argument, NULL, 'k'},
@@ -118,12 +120,15 @@ int main(int argc, char *argv[]) {
         {"set-mode", no_argument,       NULL, 's'},
         {"input",    required_argument, NULL, 'i'},
         {"output",   required_argument, NULL, 'o'},
+#ifdef CRED_FUSE_TESTING
+        {"format-version", required_argument, NULL, 'V'},
+#endif
         {"help",     no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "k:p:m:si:o:h", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "k:p:m:si:o:V:h", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'k': pubkey_path = optarg; break;
             case 'p': rel_path = optarg; break;
@@ -131,6 +136,11 @@ int main(int argc, char *argv[]) {
             case 's': set_mode = 1; break;
             case 'i': in_path = optarg; break;
             case 'o': out_path = optarg; break;
+#ifdef CRED_FUSE_TESTING
+            case 'V':
+                format_version = (uint64_t)strtoull(optarg, NULL, 10);
+                break;
+#endif
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -156,36 +166,27 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char aad[PATH_MAX + 16];
-    if (format_credential_aad(aad, sizeof(aad), rel_path, mode) < 0) {
-        fprintf(stderr, "Error: Invalid relative path '%s' (must be non-empty and contain no '..' components).\n", rel_path);
-        return 1;
-    }
-
-    uint8_t oaep_label[33];
-    if (compute_oaep_label(aad, oaep_label) < 0) {
-        fprintf(stderr, "Error: Failed to compute RSA-OAEP label from AAD.\n");
-        return 1;
-    }
-
     EVP_PKEY *pkey = load_rsa_pubkey_evp(pubkey_path, 0, NULL, NULL);
     if (!pkey) {
         fprintf(stderr, "Error: Failed to load valid RSA-2048/4096 public key from '%s'.\n", pubkey_path);
         return 1;
     }
 
+    size_t rsa_mod_bytes = (size_t)EVP_PKEY_get_size(pkey);
+    if (rsa_mod_bytes != TPM2_RSA2048_KEY_BYTES && rsa_mod_bytes != TPM2_RSA4096_KEY_BYTES) {
+        fprintf(stderr, "Error: RSA public key %s must be 2048 or 4096 bits.\n", pubkey_path);
+        EVP_PKEY_free(pkey);
+        return 1;
+    }
+
     int ret = 1;
     int in_fd = STDIN_FILENO;
-    int out_fd = STDOUT_FILENO;
+    int out_fd = -1;
+    char tmp_out_path[PATH_MAX] = {0};
     uint8_t *pt_buf = NULL;
     size_t pt_len = 0;
-    uint8_t *ct_buf = NULL;
-    EVP_PKEY_CTX *pctx = NULL;
-    EVP_CIPHER_CTX *cctx = NULL;
-    uint8_t eph_key[32];
-    uint8_t iv[12];
-    uint8_t tag[16];
-    uint8_t rsa_ct[TPM2_RSA4096_KEY_BYTES];
+    uint8_t *envelope_buf = NULL;
+    size_t envelope_len = 0;
 
     if (in_path) {
         in_fd = open(in_path, O_RDONLY | O_CLOEXEC);
@@ -210,137 +211,85 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
-    if (RAND_bytes(eph_key, sizeof(eph_key)) != 1 || RAND_bytes(iv, sizeof(iv)) != 1) {
-        fprintf(stderr, "Error: Failed to generate random key/IV via OpenSSL RAND_bytes.\n");
+    if (format_version <= CRED_ENV_VERSION_INVALID ||
+        format_version >= _CRED_ENV_VERSION_MAX ||
+        !envelope_encryptors[format_version]) {
+        fprintf(stderr, "Error: Unsupported format version %llu\n", (unsigned long long)format_version);
         goto cleanup;
     }
 
-    pctx = EVP_PKEY_CTX_new(pkey, NULL);
-    if (!pctx || EVP_PKEY_encrypt_init(pctx) <= 0) {
-        fprintf(stderr, "Error: Failed to initialize EVP_PKEY_encrypt.\n");
-        goto cleanup;
-    }
-    if (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_OAEP_PADDING) <= 0 ||
-        EVP_PKEY_CTX_set_rsa_oaep_md(pctx, EVP_sha256()) <= 0 ||
-        EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, EVP_sha256()) <= 0) {
-        fprintf(stderr, "Error: Failed to configure RSA-OAEP-SHA256 parameters.\n");
-        goto cleanup;
-    }
-
-    /* EVP_PKEY_CTX_set0_rsa_oaep_label takes ownership of the OPENSSL_malloc'd buffer */
-    uint8_t *label_copy = OPENSSL_malloc(sizeof(oaep_label));
-    if (!label_copy) {
-        fprintf(stderr, "Error: Out of memory allocating RSA-OAEP label.\n");
-        goto cleanup;
-    }
-    memcpy(label_copy, oaep_label, sizeof(oaep_label));
-    if (EVP_PKEY_CTX_set0_rsa_oaep_label(pctx, label_copy, (int)sizeof(oaep_label)) <= 0) {
-        OPENSSL_free(label_copy);
-        fprintf(stderr, "Error: Failed to set RSA-OAEP label.\n");
-        goto cleanup;
-    }
-
-    size_t rsa_ct_len = sizeof(rsa_ct);
-    if (EVP_PKEY_encrypt(pctx, rsa_ct, &rsa_ct_len, eph_key, sizeof(eph_key)) <= 0 ||
-        (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES)) {
-        fprintf(stderr, "Error: RSA-OAEP encryption of ephemeral key failed.\n");
-        goto cleanup;
-    }
-
-    ct_buf = malloc(pt_len);
-    if (!ct_buf) {
-        fprintf(stderr, "Error: Out of memory allocating ciphertext buffer.\n");
-        goto cleanup;
-    }
-
-    cctx = EVP_CIPHER_CTX_new();
-    if (!cctx ||
-        EVP_EncryptInit_ex(cctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(iv), NULL) != 1 ||
-        EVP_EncryptInit_ex(cctx, NULL, NULL, eph_key, iv) != 1) {
-        fprintf(stderr, "Error: Failed to initialize AES-256-GCM encryption.\n");
-        goto cleanup;
-    }
-
-    int outlen = 0;
-    if (EVP_EncryptUpdate(cctx, NULL, &outlen, (const uint8_t *)aad, (int)strlen(aad)) != 1) {
-        fprintf(stderr, "Error: Failed to feed AAD into AES-256-GCM.\n");
-        goto cleanup;
-    }
-
-    int ct_len = 0;
-    if (EVP_EncryptUpdate(cctx, ct_buf, &outlen, pt_buf, (int)pt_len) != 1) {
-        fprintf(stderr, "Error: AES-256-GCM encryption failed.\n");
-        goto cleanup;
-    }
-    ct_len = outlen;
-
-    if (EVP_EncryptFinal_ex(cctx, ct_buf + ct_len, &outlen) != 1) {
-        fprintf(stderr, "Error: AES-256-GCM finalization failed.\n");
-        goto cleanup;
-    }
-    ct_len += outlen;
-
-    if ((size_t)ct_len != pt_len ||
-        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_GET_TAG, sizeof(tag), tag) != 1) {
-        fprintf(stderr, "Error: Failed to extract AES-256-GCM authentication tag.\n");
+    int enc_res = envelope_encryptors[format_version](pkey, rel_path, mode, pt_buf, pt_len,
+                                                      &envelope_buf, &envelope_len);
+    if (enc_res < 0) {
+        fprintf(stderr, "Error: Envelope encryption failed.\n");
         goto cleanup;
     }
 
     if (out_path) {
+        struct stat check_st;
+        if (stat(out_path, &check_st) == 0) {
+            fprintf(stderr, "Error: Output file '%s' already exists. Refusing to overwrite for security.\n", out_path);
+            goto cleanup;
+        }
+
         mode_t create_mode = set_mode ? (mode & 07777) : 0600;
-        out_fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, create_mode);
+        int sn_ret = snprintf(tmp_out_path, sizeof(tmp_out_path), "%s.tmp.%d", out_path, (int)getpid());
+        if (sn_ret < 0 || (size_t)sn_ret >= sizeof(tmp_out_path)) {
+            fprintf(stderr, "Error: Output path is too long.\n");
+            goto cleanup;
+        }
+
+        out_fd = open(tmp_out_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, create_mode);
         if (out_fd < 0) {
-            if (errno == EEXIST) {
-                fprintf(stderr, "Error: Output file '%s' already exists. Refusing to overwrite for security.\n", out_path);
-            } else {
-                fprintf(stderr, "Error: Cannot create output file '%s': %s\n", out_path, strerror(errno));
-            }
+            fprintf(stderr, "Error: Cannot create temporary output file '%s': %s\n", tmp_out_path, strerror(errno));
             goto cleanup;
         }
         if (set_mode) {
             if (fchmod(out_fd, mode & 07777) < 0) {
-                fprintf(stderr, "Error: Cannot set permissions on '%s': %s\n", out_path, strerror(errno));
+                fprintf(stderr, "Error: Cannot set permissions on '%s': %s\n", tmp_out_path, strerror(errno));
                 goto cleanup;
             }
         }
+    } else {
+        out_fd = STDOUT_FILENO;
     }
 
-    uint64_t version_be = htobe64(CRED_ENV_VERSION_1);
-    uint16_t rsa_len_be = htobe16((uint16_t)rsa_ct_len);
-
-    if (write_all_fd(out_fd, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) < 0 ||
-        write_all_fd(out_fd, &version_be, sizeof(version_be)) < 0 ||
-        write_all_fd(out_fd, &rsa_len_be, sizeof(rsa_len_be)) < 0 ||
-        write_all_fd(out_fd, rsa_ct, rsa_ct_len) < 0 ||
-        write_all_fd(out_fd, iv, sizeof(iv)) < 0 ||
-        write_all_fd(out_fd, tag, sizeof(tag)) < 0 ||
-        write_all_fd(out_fd, ct_buf, pt_len) < 0) {
+    if (write_all_fd(out_fd, envelope_buf, envelope_len) < 0) {
         fprintf(stderr, "Error: Failed writing CRED_ENV output.\n");
         goto cleanup;
+    }
+
+    if (out_path) {
+        if (fsync(out_fd) != 0) {
+            fprintf(stderr, "Error: Failed to fsync '%s': %s\n", tmp_out_path, strerror(errno));
+            goto cleanup;
+        }
+        close(out_fd);
+        out_fd = -1;
+
+        if (rename(tmp_out_path, out_path) != 0) {
+            fprintf(stderr, "Error: Atomic rename '%s' -> '%s' failed: %s\n", tmp_out_path, out_path, strerror(errno));
+            goto cleanup;
+        }
+        tmp_out_path[0] = '\0';
     }
 
     ret = 0;
 
 cleanup:
-    OPENSSL_cleanse(eph_key, sizeof(eph_key));
-    OPENSSL_cleanse(oaep_label, sizeof(oaep_label));
+    if (envelope_buf) {
+        free(envelope_buf);
+    }
     if (pt_buf) {
         OPENSSL_cleanse(pt_buf, MAX_ALLOWED_FILE_SIZE + 1);
         free_munlock(pt_buf, MAX_ALLOWED_FILE_SIZE + 1);
     }
-    if (ct_buf) {
-        free(ct_buf);
-    }
-    if (cctx) EVP_CIPHER_CTX_free(cctx);
-    if (pctx) EVP_PKEY_CTX_free(pctx);
     if (pkey) EVP_PKEY_free(pkey);
     if (in_path && in_fd >= 0) close(in_fd);
-    if (out_path && out_fd >= 0) {
-        close(out_fd);
-        if (ret != 0) {
-            unlink(out_path);
-        }
+    if (out_fd >= 0 && out_fd != STDOUT_FILENO) close(out_fd);
+    if (tmp_out_path[0] != '\0') {
+        unlink(tmp_out_path);
     }
+    return ret;
     return ret;
 }

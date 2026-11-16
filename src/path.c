@@ -12,6 +12,7 @@
 #include <endian.h>
 #include <linux/openat2.h>
 #include <sys/syscall.h>
+#include <syslog.h>
 
 /* Safely join a parent path and a component name, avoiding duplicate slashes */
 int join_paths(char *dest, size_t size, const char *parent, const char *child) {
@@ -124,7 +125,14 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
 
         uint64_t version_be = 0;
         memcpy(&version_be, hdr + 8, sizeof(version_be));
-        if (be64toh(version_be) != CRED_ENV_VERSION_1) {
+        uint64_t file_ver = be64toh(version_be);
+        if (file_ver != CRED_ENV_CUR_VERSION) {
+            if (file_ver == CRED_ENV_VERSION_1) {
+                syslog(LOG_ERR, "Encountered deprecated CRED_ENV v1 file '%s'; re-encrypt to v2 format with cred-encrypt", rel_path ? rel_path : target);
+            } else {
+                syslog(LOG_ERR, "Encountered unsupported CRED_ENV version %llu file '%s' (current format is v%llu)",
+                       (unsigned long long)file_ver, rel_path ? rel_path : target, (unsigned long long)CRED_ENV_CUR_VERSION);
+            }
             close(fd);
             return -ENOENT;
         }

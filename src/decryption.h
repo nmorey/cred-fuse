@@ -8,7 +8,15 @@
 
 #define CRED_ENV_MAGIC "CRED_ENV"
 #define CRED_ENV_MAGIC_LEN 8
-#define CRED_ENV_VERSION_1 1ULL
+
+enum cred_env_version {
+    CRED_ENV_VERSION_INVALID = 0,
+    CRED_ENV_VERSION_1       = 1,
+    CRED_ENV_VERSION_2       = 2,
+    _CRED_ENV_VERSION_MAX,
+};
+
+#define CRED_ENV_CUR_VERSION CRED_ENV_VERSION_2
 #define CRED_ENV_FIXED_OVERHEAD 46 /* 8 magic + 8 version + 2 key_len + 12 IV + 16 tag */
 #define TPM2_RSA2048_KEY_BYTES 256
 #define TPM2_RSA4096_KEY_BYTES 512
@@ -61,11 +69,21 @@ int validate_tcti(const char *tcti);
 int parse_octal_mode(const char *mode_str, mode_t *mode_out);
 
 /*
- * Format the canonical AAD string "<rel_path>:<04o mode>" into buf.
+ * Format the canonical AAD string "<rel_path>:<04o mode>" into buf (v1 format).
  * Strips leading slashes and rejects empty paths or ".." traversal components.
  * Returns 0 on success, < 0 on error.
  */
 int format_credential_aad(char *buf, size_t buf_sz, const char *rel_path, mode_t mode);
+
+/*
+ * Format binary AAD for v2 format:
+ * magic[8] || version[8] || rsa_ct_len[2] || ciphertext_len[4] || iv[12] || "<rel_path>:<04o mode>"
+ * Returns 0 on success, < 0 on error.
+ */
+int format_credential_aad_v2(uint8_t *buf, size_t buf_sz, size_t *aad_len_out,
+                             uint16_t rsa_ct_len, uint32_t ciphertext_len,
+                             const uint8_t iv[12],
+                             const char *rel_path, mode_t mode);
 
 /*
  * Compute the 33-byte null-terminated RSA-OAEP label from the canonical AAD string
@@ -73,6 +91,21 @@ int format_credential_aad(char *buf, size_t buf_sz, const char *rel_path, mode_t
  * Returns 0 on success, < 0 on error.
  */
 int compute_oaep_label(const char *aad, uint8_t label_buf[33]);
+
+/*
+ * Compute the 33-byte null-terminated RSA-OAEP label from a binary AAD buffer.
+ * Returns 0 on success, < 0 on error.
+ */
+int compute_oaep_label_bin(const uint8_t *aad, size_t aad_len, uint8_t label_buf[33]);
+
+/*
+ * Derives a 32-byte AES key from an ephemeral secret using HKDF-SHA256.
+ * Returns 0 on success, < 0 on error.
+ */
+int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
+                        const uint8_t *salt, size_t salt_len,
+                        const char *info,
+                        uint8_t aes_key_out[32]);
 
 /*
  * Load a 2048-bit or 4096-bit RSA public key from a PEM or TSS2 TPM2B_PUBLIC file.
@@ -94,12 +127,23 @@ int init_decryption(void);
 int check_tpm_lockout(void);
 
 /*
- * Decrypts an in-memory CRED_ENV v1 envelope bound to (rel_path, mode).
+ * Decrypts an in-memory CRED_ENV envelope bound to (rel_path, mode).
+ * Uses envelope_decryptors[CRED_ENV_CUR_VERSION] (strict v2).
  * Returns 0 on success, < 0 on error.
  */
 int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
                      const char *rel_path, mode_t mode,
                      struct decrypted_node *out);
+
+/*
+ * Decrypts an in-memory CRED_ENV envelope supporting legacy versions <= CRED_ENV_CUR_VERSION.
+ * Stores the detected version in *version_out if non-NULL.
+ * Returns 0 on success, < 0 on error.
+ */
+int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
+                             const char *rel_path, mode_t mode,
+                             struct decrypted_node *out,
+                             uint64_t *version_out);
 
 /*
  * Reads an encrypted file descriptor, extracts its permission bits, and decrypts

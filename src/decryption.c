@@ -15,6 +15,7 @@
  */
 
 #include "decryption.h"
+#include "envelope.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/param_build.h>
+#include <openssl/kdf.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <syslog.h>
@@ -759,9 +761,9 @@ static uint8_t *copy_tpm_message(TPM2B_PUBLIC_KEY_RSA *message) {
     return ptr;
 }
 
-static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
-			    const char *aad,
-			    struct decrypted_node *out) {
+int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
+                     const uint8_t oaep_label[33],
+                     struct decrypted_node *out) {
     if (in_len != TPM2_RSA2048_KEY_BYTES && in_len != TPM2_RSA4096_KEY_BYTES) {
         return -EMSGSIZE;
     }
@@ -778,10 +780,10 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     int ret_err = 0;
     int session_need_flush = 0;
 
-    ret_err = compute_oaep_label(aad, label.buffer);
-    if (ret_err != 0) {
-        return ret_err;
+    if (!oaep_label) {
+        return -EINVAL;
     }
+    memcpy(label.buffer, oaep_label, 33);
 
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
@@ -908,14 +910,13 @@ out_tcti:
     return ret_err;
 }
 
-static int do_aes_decrypt(const uint8_t *iv,
-			  const uint8_t *tag,
-			  const uint8_t *ciphertext, size_t ciphertext_len,
-			  const char *aad,
-			  const struct decrypted_node *eph_key,
-			  struct decrypted_node *out) {
+int do_aes_decrypt(const uint8_t *iv,
+                   const uint8_t *tag,
+                   const uint8_t *ciphertext, size_t ciphertext_len,
+                   const uint8_t *aad, size_t aad_len,
+                   const struct decrypted_node *eph_key,
+                   struct decrypted_node *out) {
     uint8_t tag_buf[16];
-    size_t aad_len;
     EVP_CIPHER_CTX *ctx;
     uint8_t *plain;
     size_t alloc_sz;
@@ -930,11 +931,7 @@ static int do_aes_decrypt(const uint8_t *iv,
         return -EINVAL;
     }
 
-    if (!aad || aad[0] == '\0') {
-        return -EINVAL;
-    }
-    aad_len = strlen(aad);
-    if (aad_len > INT_MAX) {
+    if (!aad || aad_len == 0 || aad_len > INT_MAX) {
         return -EINVAL;
     }
 
@@ -1013,9 +1010,22 @@ static int do_aes_decrypt(const uint8_t *iv,
     return ret_err;
 }
 
-int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
-                     const char *rel_path, mode_t mode,
-                     struct decrypted_node *out) {
+const decrypt_envelope_fn envelope_decryptors[_CRED_ENV_VERSION_MAX] = {
+    [CRED_ENV_VERSION_1] = decrypt_envelope_v1,
+    [CRED_ENV_VERSION_2] = decrypt_envelope_v2,
+};
+
+const encrypt_envelope_fn envelope_encryptors[_CRED_ENV_VERSION_MAX] = {
+#ifdef CRED_FUSE_TESTING
+    [CRED_ENV_VERSION_1] = encrypt_envelope_v1,
+#endif
+    [CRED_ENV_VERSION_2] = encrypt_envelope_v2,
+};
+
+int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
+                             const char *rel_path, mode_t mode,
+                             struct decrypted_node *out,
+                             uint64_t *version_out) {
     if (!enc_data || !rel_path || !out) {
         return -EINVAL;
     }
@@ -1031,54 +1041,36 @@ int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
     uint64_t version_be = 0;
     memcpy(&version_be, enc_data + 8, sizeof(version_be));
     uint64_t version = be64toh(version_be);
-    if (version != CRED_ENV_VERSION_1) {
+    if (version_out) {
+        *version_out = version;
+    }
+
+    if (version <= CRED_ENV_VERSION_INVALID || version >= _CRED_ENV_VERSION_MAX) {
         return -EPROTONOSUPPORT;
     }
 
-    uint16_t rsa_ct_len_be = 0;
-    memcpy(&rsa_ct_len_be, enc_data + 16, sizeof(rsa_ct_len_be));
-    uint16_t rsa_ct_len = be16toh(rsa_ct_len_be);
-    if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
-        return -EBADMSG;
+    decrypt_envelope_fn fn = envelope_decryptors[version];
+    if (!fn) {
+        return -EPROTONOSUPPORT;
     }
 
-    size_t header_len = CRED_ENV_FIXED_OVERHEAD + (size_t)rsa_ct_len;
-    if (enc_len <= header_len) {
-        return -EBADMSG;
+    return fn(enc_data, enc_len, rel_path, mode, out);
+}
+
+int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
+                     const char *rel_path, mode_t mode,
+                     struct decrypted_node *out) {
+    if (CRED_ENV_CUR_VERSION <= CRED_ENV_VERSION_INVALID ||
+        CRED_ENV_CUR_VERSION >= _CRED_ENV_VERSION_MAX) {
+        return -EPROTONOSUPPORT;
     }
 
-    char aad[PATH_MAX + 16];
-    int r = format_credential_aad(aad, sizeof(aad), rel_path, mode);
-    if (r < 0) {
-        return r;
+    decrypt_envelope_fn fn = envelope_decryptors[CRED_ENV_CUR_VERSION];
+    if (!fn) {
+        return -EPROTONOSUPPORT;
     }
 
-    const uint8_t *rsa_ct = enc_data + 18;
-    const uint8_t *iv = enc_data + 18 + rsa_ct_len;
-    const uint8_t *tag = enc_data + 30 + rsa_ct_len;
-    const uint8_t *ciphertext = enc_data + header_len;
-    size_t ciphertext_len = enc_len - header_len;
-
-    if (global_opts.max_file_size > 0 && ciphertext_len > (size_t)global_opts.max_file_size) {
-        return -EFBIG;
-    }
-
-    struct decrypted_node eph_key = { 0 };
-    r = tpm2_rsa_decrypt(rsa_ct, rsa_ct_len, aad, &eph_key);
-    if (r < 0) {
-        clean_decrypted_node(&eph_key);
-        return r;
-    }
-
-    if (eph_key.len != 32) {
-        clean_decrypted_node(&eph_key);
-        return -EBADMSG;
-    }
-
-    r = do_aes_decrypt(iv, tag, ciphertext, ciphertext_len, aad, &eph_key, out);
-    clean_decrypted_node(&eph_key);
-    OPENSSL_cleanse(aad, sizeof(aad));
-    return r;
+    return fn(enc_data, enc_len, rel_path, mode, out);
 }
 
 int decrypt_credential(int fd,

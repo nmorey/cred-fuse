@@ -85,13 +85,19 @@ tampered_ct[-1] ^= 0x01
 with open('${WORKDIR}/source/gcm_tampered.enc', 'wb') as f:
     f.write(tampered_ct)
 
-# Tamper with version field (offset 8..15 -> version 2)
+# Tamper with version field (offset 8..15 -> version 99)
 bad_ver = bytearray(data)
-bad_ver[15] = 2
+bad_ver[15] = 99
 with open('${WORKDIR}/source/gcm_bad_version.enc', 'wb') as f:
     f.write(bad_ver)
 "
 chmod 644 "${WORKDIR}/source/gcm_tampered.enc" "${WORKDIR}/source/gcm_bad_version.enc"
+
+# 3. Create a legacy CRED_ENV v1 file using cred-encrypt --format-version 1
+echo -n "migrated-v1-secret" > "${WORKDIR}/plain_v1.txt"
+"${CRED_ENCRYPT}" --format-version 1 -k "${WORKDIR}/tpm_pub.pem" -p "legacy_v1.enc" -m 0644 -i "${WORKDIR}/plain_v1.txt" -o "${WORKDIR}/source/legacy_v1.enc"
+rm -f "${WORKDIR}/plain_v1.txt"
+chmod 644 "${WORKDIR}/source/legacy_v1.enc"
 
 cp "${WORKDIR}/source/gcm_test.enc" "${WORKDIR}/source/gcm_swapped.enc"
 chmod 644 "${WORKDIR}/source/gcm_swapped.enc"
@@ -99,7 +105,7 @@ chmod 644 "${WORKDIR}/source/gcm_swapped.enc"
 # Start standard FUSE mount
 start_fuse "${FUSE_EXE}"
 
-echo "Testing CRED_ENV v1 valid decryption (small and large)..."
+echo "Testing CRED_ENV v2 valid decryption (small and large)..."
 if [ "$(cat "${WORKDIR}/credentials/gcm_test.enc")" != "aes-gcm-secret-value" ]; then
     echo "ERROR: CRED_ENV small file decryption mismatched"
     exit 1
@@ -109,7 +115,31 @@ if ! cmp -s "${WORKDIR}/plain_large.txt" "${WORKDIR}/credentials/gcm_large.enc";
     exit 1
 fi
 rm -f "${WORKDIR}/plain_large.txt"
-echo "TEST: CRED_ENV v1 valid decryption: Success"
+echo "TEST: CRED_ENV v2 valid decryption: Success"
+
+echo "Testing mount.cred-fuse rejection of legacy CRED_ENV v1 file..."
+if cat "${WORKDIR}/credentials/legacy_v1.enc" 2>/dev/null; then
+    echo "ERROR: mount.cred-fuse served deprecated v1 file!"
+    exit 1
+fi
+echo "TEST: mount.cred-fuse v1 rejection: Success"
+
+echo "Testing cred-decrypt legacy v1 decoding and migration pipeline..."
+V1_MIGRATED=$("${CRED_DECRYPT}" -c 0x81010002 -p "legacy_v1.enc" -m 0644 -k "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG" -i "${WORKDIR}/source/legacy_v1.enc" 2>/dev/null)
+if [ "$V1_MIGRATED" != "migrated-v1-secret" ]; then
+    echo "ERROR: cred-decrypt failed to decode v1 envelope!"
+    exit 1
+fi
+
+# Upgrade v1 -> v2 using pipeline with --set-mode (-s)
+"${CRED_DECRYPT}" -c 0x81010002 -p "legacy_v1.enc" -m 0644 -k "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG" -i "${WORKDIR}/source/legacy_v1.enc" 2>/dev/null | \
+    "${CRED_ENCRYPT}" -k "${WORKDIR}/tpm_pub.pem" -p "upgraded_v2.enc" -m 0644 -s -o "${WORKDIR}/source/upgraded_v2.enc"
+
+if [ "$(cat "${WORKDIR}/credentials/upgraded_v2.enc")" != "migrated-v1-secret" ]; then
+    echo "ERROR: Upgraded v2 file failed decryption through mount.cred-fuse!"
+    exit 1
+fi
+echo "TEST: v1 -> v2 migration pipeline: Success"
 
 echo "Testing CRED_ENV v1 AES-GCM integrity failure handling..."
 if cat "${WORKDIR}/credentials/gcm_tampered.enc" 2>/dev/null; then

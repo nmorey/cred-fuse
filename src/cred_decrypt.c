@@ -16,6 +16,7 @@
 #include <openssl/crypto.h>
 
 #include "decryption.h"
+#include "envelope.h"
 
 struct cred_fuse_opts global_opts = {0};
 int mlockall_active = 0;
@@ -216,9 +217,14 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
-    if (decrypt_envelope(enc_buf, enc_len, rel_path, mode, &out_node) < 0) {
+    uint64_t file_version = 0;
+    if (decrypt_envelope_version(enc_buf, enc_len, rel_path, mode, &out_node, &file_version) < 0) {
         fprintf(stderr, "Error: Envelope decryption failed (authentication failure, corrupted envelope, or mismatched path/mode).\n");
         goto cleanup;
+    }
+    if (file_version < CRED_ENV_CUR_VERSION) {
+        fprintf(stderr, "Notice: Decrypted legacy CRED_ENV v%llu envelope; please re-encrypt to v%llu using cred-encrypt.\n",
+                (unsigned long long)file_version, (unsigned long long)CRED_ENV_CUR_VERSION);
     }
 
     if (out_path) {
