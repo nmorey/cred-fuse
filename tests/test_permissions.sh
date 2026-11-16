@@ -26,9 +26,13 @@ rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/write_perms.enc" 0777
 # suid_perms.enc: 4755
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/suid_perms.enc" 04755
 
-# subdir with 2777 permissions
+# subdir with 0755 permissions
 mkdir -p "${WORKDIR}/source/subdir"
-chmod 02777 "${WORKDIR}/source/subdir"
+chmod 0755 "${WORKDIR}/source/subdir"
+
+# subdir_bad with 2777 permissions (should be rejected)
+mkdir -p "${WORKDIR}/source/subdir_bad"
+chmod 02777 "${WORKDIR}/source/subdir_bad"
 
 rm -f "${WORKDIR}/valid.txt"
 
@@ -67,13 +71,20 @@ if [ "$PERM" != "444" ]; then
 fi
 echo "TEST: SUID/exec permissions stripped on file: Success"
 
-echo "Testing Write and SGID permissions stripped on directory while preserving traverse (2777 becomes 555)..."
+echo "Testing Directory permissions masked (0755 becomes 0555)..."
 PERM=$(stat -c %a "${WORKDIR}/credentials/subdir")
 if [ "$PERM" != "555" ]; then
     echo "ERROR: Directory permissions not masked properly. Expected 555, got $PERM"
     exit 1
 fi
 echo "TEST: Directory permissions masked: Success"
+
+echo "Testing group- or world-writable directory rejection (2777 rejected with EACCES)..."
+if ls "${WORKDIR}/credentials/subdir_bad" 2>/dev/null; then
+    echo "ERROR: Writable directory was not rejected!"
+    exit 1
+fi
+echo "TEST: Writable directory rejection: Success"
 
 echo "Testing rejection of POSIX ACLs in getxattr..."
 if getfattr -n system.posix_acl_access "${WORKDIR}/credentials/perms.enc" 2>/dev/null; then

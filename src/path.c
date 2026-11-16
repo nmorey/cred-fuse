@@ -82,6 +82,10 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
             return -EACCES;
         }
 #endif
+        if ((st_out->st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            close(fd);
+            return -EACCES;
+        }
     }
 
     // Reset O_NONBLOCK flag so that subsequent I/O behaves normally

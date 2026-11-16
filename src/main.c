@@ -212,6 +212,7 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
         reply_err_and_audit(req, errno, "lookup", parent, name);
         return;
     }
+    set_inode_identity(new_ino, st.st_dev, st.st_ino);
 
     memset(&e, 0, sizeof(e));
     e.ino = new_ino;
@@ -275,6 +276,11 @@ static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     if (fd < 0) {
         err_code = -fd;
         goto err_decrement;
+    }
+
+    if (!check_inode_identity(ino, st.st_dev, st.st_ino)) {
+        err_code = ESTALE;
+        goto err_close;
     }
 
     fi->direct_io = 1;
@@ -513,6 +519,9 @@ static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t o
         case DT_UNKNOWN:
         case DT_DIR:
             entry_ino = add_inode(entry_rel_path, 0);
+            if (entry_ino && tmp_st.st_ino != 0) {
+                set_inode_identity(entry_ino, tmp_st.st_dev, tmp_st.st_ino);
+            }
             break;
         default:
             entry_ino = find_inode(entry_rel_path);

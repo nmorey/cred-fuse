@@ -29,6 +29,8 @@ struct inode_entry {
     char *path;
     int64_t refcount;
     fuse_ino_t full_ino;
+    dev_t dev;
+    ino_t backing_ino;
 };
 
 #define HASH_SIZE (MAX_INODE * 2)
@@ -133,6 +135,8 @@ static void free_inode(fuse_ino_t ino)
     inodes[ino].path = NULL;
     inodes[ino].refcount = 0;
     inodes[ino].full_ino = 0;
+    inodes[ino].dev = 0;
+    inodes[ino].backing_ino = 0;
     clear_inode_bit(ino);
 }
 
@@ -281,6 +285,8 @@ fuse_ino_t add_inode(const char *rel_path, int take_ref) {
 
     inodes[new_slot].path = path_copy;
     inodes[new_slot].refcount = 0;
+    inodes[new_slot].dev = 0;
+    inodes[new_slot].backing_ino = 0;
     if (take_ref)
 	inode_lookup_inc(new_slot);
     insert_hash(new_slot);
@@ -344,6 +350,39 @@ char *get_inode_path(fuse_ino_t ino) {
     pthread_rwlock_unlock(&inode_lock);
     errno = ENOENT;
     return NULL;
+}
+
+void set_inode_identity(fuse_ino_t ino, dev_t dev, ino_t backing_ino) {
+    fuse_ino_t slot = ino_to_slot(ino);
+    if (slot < 2) {
+        return;
+    }
+    pthread_rwlock_wrlock(&inode_lock);
+    if (is_inode_active(slot) && inodes[slot].full_ino == ino) {
+        inodes[slot].dev = dev;
+        inodes[slot].backing_ino = backing_ino;
+    }
+    pthread_rwlock_unlock(&inode_lock);
+}
+
+int check_inode_identity(fuse_ino_t ino, dev_t dev, ino_t backing_ino) {
+    fuse_ino_t slot = ino_to_slot(ino);
+    if (slot < 2) {
+        return 0; // Inode 1 (root) or invalid
+    }
+    pthread_rwlock_rdlock(&inode_lock);
+    if (is_inode_active(slot) && inodes[slot].full_ino == ino) {
+        if (inodes[slot].backing_ino == 0) {
+            // Not recorded yet, treat as matching
+            pthread_rwlock_unlock(&inode_lock);
+            return 1;
+        }
+        int match = (inodes[slot].dev == dev && inodes[slot].backing_ino == backing_ino);
+        pthread_rwlock_unlock(&inode_lock);
+        return match;
+    }
+    pthread_rwlock_unlock(&inode_lock);
+    return 0;
 }
 
 void cleanup_inodes(void) {

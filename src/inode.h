@@ -12,5 +12,7 @@ fuse_ino_t find_inode(const char *rel_path);
 void inode_forget(fuse_ino_t ino, uint64_t nlookup);
 char *get_inode_path(fuse_ino_t ino);
 void cleanup_inodes(void);
+void set_inode_identity(fuse_ino_t ino, dev_t dev, ino_t backing_ino);
+int check_inode_identity(fuse_ino_t ino, dev_t dev, ino_t backing_ino);
 
 #endif /* INODE_H */
