@@ -88,6 +88,7 @@ if(BUILD_TESTING)
         test_max_open_files
         test_inode_eviction
         test_tcti_validation
+        test_lockout
     )
 
     foreach(subtest ${subtests})

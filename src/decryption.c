@@ -846,10 +846,12 @@ static int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
     if (rc != TSS2_RC_SUCCESS || !message) {
         syslog(LOG_ERR, "tpm2_rsa_decrypt: Esys_RSA_Decrypt failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
         TSS2_RC base_rc = rc & ~TPM2_RC_N_MASK;
-        if (base_rc == TPM2_RC_LOCKOUT || base_rc == TPM2_RC_AUTH_FAIL) {
+        if ((rc & TPM2_RC_FMT1) ? (base_rc == TPM2_RC_AUTH_FAIL) : (rc == TPM2_RC_LOCKOUT)) {
             ret_err = -EKEYREJECTED;
+        } else if (rc == TPM2_RC_RETRY || rc == TPM2_RC_OBJECT_MEMORY || rc == TPM2_RC_SESSION_MEMORY) {
+            ret_err = -EAGAIN;
         } else {
-            ret_err = -EACCES;
+            ret_err = -EIO;
         }
         goto out_msg;
     }
