@@ -126,6 +126,17 @@ static inline uint16_t uid_to_slot(uid_t uid) {
     return (uid < MAX_SYSTEM_UID) ? (uint16_t)uid : (uint16_t)MAX_SYSTEM_UID;
 }
 
+static inline int is_allowed_caller(fuse_req_t req) {
+#ifndef CRED_FUSE_TESTING
+    if (fuse_req_ctx(req)->uid >= MAX_SYSTEM_UID) {
+        return 0;
+    }
+#else
+    (void)req;
+#endif
+    return 1;
+}
+
 static void reply_err_and_audit(fuse_req_t req, int err, const char *op, fuse_ino_t ino, const char *filename) {
     if ((err == EACCES || err == EPERM) && audit_is_active()) {
         const struct fuse_ctx *ctx = fuse_req_ctx(req);
@@ -181,6 +192,10 @@ static void sanitize_stat_mode(struct stat *st) {
 
 /* 1. LOOKUP: Translate a path component to an inode */
 static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
+    if (!is_allowed_caller(req)) {
+        fuse_reply_err(req, EACCES);
+        return;
+    }
     if (!is_valid_name(name)) {
         reply_err_and_audit(req, ENOENT, "lookup", parent, "invalid_name");
         return;
@@ -231,6 +246,10 @@ static void cred_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) 
 /* 2. GETATTR: Retrieve file or directory attributes */
 static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
     (void)fi;
+    if (!is_allowed_caller(req)) {
+        fuse_reply_err(req, EACCES);
+        return;
+    }
     struct stat st;
     int fd = open_and_validate_ino(ino, &st);
     if (fd < 0) {
@@ -254,6 +273,10 @@ static void cred_ll_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_inf
  */
 /* 3. OPEN: Open a file safely */
 static void cred_ll_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+    if (!is_allowed_caller(req)) {
+        fuse_reply_err(req, EACCES);
+        return;
+    }
     int fd = -1;
     struct decrypted_node *node = NULL;
     int err_code = 0;
@@ -386,6 +409,10 @@ static void cred_ll_release(fuse_req_t req, fuse_ino_t ino __attribute__((unused
 
 static void cred_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
     (void)fi;
+    if (!is_allowed_caller(req)) {
+        fuse_reply_err(req, EACCES);
+        return;
+    }
     if (off < 0) {
         reply_err_and_audit(req, EINVAL, "readdir", ino, NULL);
         return;
@@ -555,6 +582,10 @@ done:
 
 /* 8. GETXATTR: Forward LSM/SELinux extended attributes; reject unauthenticated POSIX ACLs */
 static void cred_ll_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
+    if (!is_allowed_caller(req)) {
+        fuse_reply_err(req, EACCES);
+        return;
+    }
     /*
      * Explicitly reject POSIX ACLs (system.posix_acl_access / system.posix_acl_default).
      * The cryptographic envelope binds only standard mode bits (07777) into AAD;
