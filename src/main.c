@@ -746,10 +746,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (!global_opts.source_dir || !global_opts.tpm_handle_str) {
-        fprintf(stderr, "Usage: %s <source_dir> <mountpoint> -o tpm_handle=<hex> [options]\n", argv[0]);
+    if (!global_opts.source_dir || !global_opts.tpm_handle_str || !global_opts.tpm_pubkey) {
+        fprintf(stderr, "Usage: %s <source_dir> <mountpoint> -o tpm_handle=<hex>,tpm_pubkey=<path> [options]\n", argv[0]);
         fprintf(stderr, "Missing required arguments:\n"
-                        "  <source_dir>\n  -o tpm_handle=<hex>\n");
+                        "  <source_dir>\n  -o tpm_handle=<hex>\n  -o tpm_pubkey=<path>\n");
         ret = 1;
         goto err_early;
     }

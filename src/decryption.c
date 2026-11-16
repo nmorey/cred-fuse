@@ -490,7 +490,8 @@ static int verify_and_pin_tpm_key(ESYS_CONTEXT *esys_ctx, ESYS_TR key_handle) {
         TPMA_OBJECT req_attrs = TPMA_OBJECT_FIXEDTPM |
                                 TPMA_OBJECT_FIXEDPARENT |
                                 TPMA_OBJECT_SENSITIVEDATAORIGIN |
-                                TPMA_OBJECT_DECRYPT;
+                                TPMA_OBJECT_DECRYPT |
+                                TPMA_OBJECT_NODA;
 
         if (out_public->publicArea.type != TPM2_ALG_RSA ||
             (out_public->publicArea.parameters.rsaDetail.keyBits != 2048 &&

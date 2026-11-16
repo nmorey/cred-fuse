@@ -39,7 +39,7 @@ sleep 1
 
 # 2. Key Generation
 tpm2_startup -c -T "$TCTI_ARG"
-tpm2_createprimary -Q -C o -G rsa -a 'decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth' -c "${WORKDIR}/primary.ctx" -T "$TCTI_ARG"
+tpm2_createprimary -Q -C o -G rsa -a 'decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda' -c "${WORKDIR}/primary.ctx" -T "$TCTI_ARG"
 tpm2_evictcontrol -C o -c "${WORKDIR}/primary.ctx" 0x81010002 -T "$TCTI_ARG" || true
 tpm2_readpublic -Q -c 0x81010002 -f pem -o "${WORKDIR}/tpm_pub.pem" -T "$TCTI_ARG"
 chmod 644 "${WORKDIR}/tpm_pub.pem"
