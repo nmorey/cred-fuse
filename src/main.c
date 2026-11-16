@@ -843,8 +843,17 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
+    if (!global_opts.tcti) {
+        global_opts.tcti = strdup("device:/dev/tpmrm0");
+        if (!global_opts.tcti) {
+            fprintf(stderr, "Out of memory allocating default TCTI\n");
+            ret = 1;
+            goto err_early;
+        }
+    }
+
     if (!validate_tcti(global_opts.tcti)) {
-        fprintf(stderr, "Invalid tcti option. Must be device, swtpm, tabrmd, or NULL.\n");
+        fprintf(stderr, "Invalid tcti option. Must be device, swtpm, or tabrmd.\n");
         ret = 1;
         goto err_early;
     }

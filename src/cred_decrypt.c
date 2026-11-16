@@ -171,6 +171,8 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         global_opts.tcti = (char *)tcti_str;
+    } else {
+        global_opts.tcti = "device:/dev/tpmrm0";
     }
 
     if (pubkey_path) {

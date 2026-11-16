@@ -120,8 +120,8 @@ void clean_decrypted_node(struct decrypted_node *node)
 }
 
 int validate_tcti(const char *tcti) {
-    if (!tcti) {
-        return 1;
+    if (!tcti || *tcti == '\0') {
+        return 0;
     }
 
     const char *allowed_schemes[] = {
