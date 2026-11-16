@@ -105,6 +105,11 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
             return -EACCES;
         }
 
+        if ((st_out->st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            close(fd);
+            return -EACCES;
+        }
+
         uint8_t hdr[18];
         ssize_t n = pread(fd, hdr, sizeof(hdr), 0);
         if (n != (ssize_t)sizeof(hdr)) {

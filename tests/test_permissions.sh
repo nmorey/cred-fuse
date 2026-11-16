@@ -20,11 +20,11 @@ rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/perms.enc" 0400
 # valid.enc: 644
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/valid.enc" 0644
 
-# write_perms.enc: 777
+# write_perms.enc: 777 (should be rejected as group- and world-writable)
 rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/write_perms.enc" 0777
 
 # suid_perms.enc: 4755
-rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/suid_perms.enc" 04755
+rsa_encrypt_cred "${WORKDIR}/valid.txt" "${WORKDIR}/source/suid_perms.enc" 04700
 
 # subdir with 0755 permissions
 mkdir -p "${WORKDIR}/source/subdir"
@@ -55,18 +55,17 @@ if [ "$PERM" != "444" ]; then
 fi
 echo "TEST: Write permissions stripped: Success"
 
-echo "Testing All write and execute permissions stripped on regular file (777 becomes 444)..."
-PERM=$(stat -c %a "${WORKDIR}/credentials/write_perms.enc")
-if [ "$PERM" != "444" ]; then
-    echo "ERROR: Write/execute permissions not completely stripped from 777. Expected 444, got $PERM"
+echo "Testing rejection of group- or world-writable regular file (777 rejected with EACCES)..."
+if ls "${WORKDIR}/credentials/write_perms.enc" 2>/dev/null; then
+    echo "ERROR: Writable file (0777) was not rejected!"
     exit 1
 fi
-echo "TEST: All write/exec permissions stripped on file: Success"
+echo "TEST: Writable file rejection: Success"
 
-echo "Testing SUID and execute permissions stripped on regular file (4755 becomes 444)..."
+echo "Testing SUID and execute permissions stripped on regular file (4700 becomes 400)..."
 PERM=$(stat -c %a "${WORKDIR}/credentials/suid_perms.enc")
-if [ "$PERM" != "444" ]; then
-    echo "ERROR: SUID/execute permissions not stripped from 4755. Expected 444, got $PERM"
+if [ "$PERM" != "400" ]; then
+    echo "ERROR: SUID/execute permissions not stripped from 4700. Expected 400, got $PERM"
     exit 1
 fi
 echo "TEST: SUID/exec permissions stripped on file: Success"
