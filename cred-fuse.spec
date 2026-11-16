@@ -17,7 +17,7 @@
 
 %define         git_ver %{nil}
 Name:           cred-fuse
-Version:        2.1
+Version:        3.0
 Release:        0
 Summary:        FUSE driver and CLI tools for TPM-encrypted credentials
 License:        GPL-2.0-only

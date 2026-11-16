@@ -1,4 +1,60 @@
 -------------------------------------------------------------------
+Mon Nov 16 12:00:00 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
+
+- Release 3.0
+  - Cryptographic & Envelope Overhaul (CRED_ENV v2):
+    - Upgrade to CRED_ENV v2 format binding the binary envelope header,
+      ciphertext length, IV, relative path, and POSIX permissions into
+      binary AAD and RSA-OAEP label
+    - Add HKDF-SHA256 symmetric key derivation over unwrapped ephemeral
+      secret and IV salt
+    - Upgrade TPM session parameter encryption from AES-128-CFB to
+      AES-256-CFB for enhanced bus confidentiality
+    - Enforce standard RSA public exponent e == 65537, rejecting weak or
+      degenerate exponents
+    - Implement atomic output file creation (tmp file + POSIX rename) in
+      cred-encrypt
+    - Cleanse intermediate cryptographic buffers and structures
+    - Modularize envelope versions into envelope_v1.c and envelope_v2.c
+      with bounds-checked function pointer tables
+    - Strictly enforce v2 in mount.cred-fuse and log a syslog error when
+      encountering legacy v1 files
+    - Support legacy v1 decoding in cred-decrypt to enable one-line
+      migration pipelines (cred-decrypt v1 | cred-encrypt -s -o v2)
+  - TPM Security & Lockout Hardening:
+    - Enforce TPMA_OBJECT_NODA attribute on TPM decryption keys to prevent
+      hardware dictionary attack lockout
+    - Correct TPM2_RC_LOCKOUT warning code decoding and map transient TPM
+      resource exhaustion errors to -EAGAIN
+    - Add automated dictionary attack lockout rejection and recovery test
+      (test_lockout)
+    - Require tpm_pubkey pinning at mount time to eliminate TPM handle
+      substitution attacks
+    - Reject NULL TCTI configurations and enforce explicit
+      device:/dev/tpmrm0 default
+  - FUSE Layer & Filesystem Semantics:
+    - Bind (st_dev, st_ino) identity to inode entries at lookup/readdir and
+      verify identity on open() to prevent TOCTOU file swap attacks
+    - Reject group- and world-writable directories and regular files in
+      backing store with -EACCES
+    - Restrict filesystem access strictly to system daemons (UID < 1000)
+      in production builds
+    - Forbid -d and debug mount options in production builds
+  - Privilege Separation & Process Confinement:
+    - Drop worker primary and supplementary GIDs to tss group via
+      setresgid and verify group transitions
+    - Drop CAP_IPC_LOCK post-mlockall in worker and apply
+      PR_SET_NO_NEW_PRIVS and bounding set restrictions to supervisor
+  - Audit Subsystem:
+    - Exclude authorization failures from rate-limiting token bucket to
+      guarantee visibility of security anomalies
+    - Track and log dropped audit events to syslog when rate-limiting
+      thresholds are reached
+  - Build Hardening:
+    - Disable system installation targets when building with
+      BUILD_TESTING=ON
+
+-------------------------------------------------------------------
 Fri Nov 06 10:45:00 UTC 2026 - Nicolas Morey <nicolas.morey@suse.com>
 
 - Release 2.1
