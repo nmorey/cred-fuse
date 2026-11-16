@@ -81,6 +81,10 @@ static const struct fuse_opt cred_opts[] = {
     FUSE_OPT_KEY("suid", KEY_FORBIDDEN_MOUNT_OPT),
     FUSE_OPT_KEY("dev", KEY_FORBIDDEN_MOUNT_OPT),
     FUSE_OPT_KEY("exec", KEY_FORBIDDEN_MOUNT_OPT),
+#ifndef CRED_FUSE_TESTING
+    FUSE_OPT_KEY("-d", KEY_FORBIDDEN_MOUNT_OPT),
+    FUSE_OPT_KEY("debug", KEY_FORBIDDEN_MOUNT_OPT),
+#endif
     FUSE_OPT_END
 };
 
