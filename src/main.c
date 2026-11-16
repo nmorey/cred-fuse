@@ -15,6 +15,7 @@
  */
 
 #define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #define FUSE_USE_VERSION 312
 
 #include <fuse3/fuse_lowlevel.h>
@@ -639,7 +640,18 @@ static int drop_privileges(void) {
     struct group *tss_grp = getgrnam("tss");
     if (tss_grp != NULL) {
         gid_t gids[1] = { tss_grp->gr_gid };
-        (void)setgroups(1, gids);
+        if (setgroups(1, gids) != 0) {
+            syslog(LOG_ERR, "Failed to drop supplementary groups to tss: %s", strerror(errno));
+            return -1;
+        }
+        if (setresgid(tss_grp->gr_gid, tss_grp->gr_gid, tss_grp->gr_gid) != 0) {
+            syslog(LOG_ERR, "Failed to set process GID to tss: %s", strerror(errno));
+            return -1;
+        }
+    } else {
+        if (setgroups(0, NULL) != 0) {
+            syslog(LOG_WARNING, "Warning: Failed to clear supplementary groups: %s", strerror(errno));
+        }
     }
 
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
@@ -651,14 +663,13 @@ static int drop_privileges(void) {
 
     /*
      * Design note on capabilities:
-     * In the worker process, active event loop operations only require DAC_READ_SEARCH,
-     * IPC_LOCK, and AUDIT_WRITE.
+     * In the worker process, active event loop operations only require DAC_READ_SEARCH
+     * and AUDIT_WRITE (mlockall was already completed, so CAP_IPC_LOCK is not needed).
      * CAP_SYS_ADMIN and CAP_AUDIT_CONTROL are completely dropped from effective, permitted,
      * and bounding sets.
      * Shutdown cleanup (audit rules and unmounting) is handled by the isolated supervisor process.
      */
     uint64_t eff_mask = (1ULL << CAP_DAC_READ_SEARCH) |
-                        (1ULL << CAP_IPC_LOCK) |
                         (1ULL << CAP_AUDIT_WRITE);
     uint64_t perm_mask = eff_mask;
 
@@ -970,7 +981,20 @@ int main(int argc, char *argv[]) {
         if (geteuid() == 0)
 #endif
         {
+            if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+                syslog(LOG_WARNING, "Warning: Supervisor failed to set PR_SET_NO_NEW_PRIVS: %s", strerror(errno));
+            }
+            (void)prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+
             uint64_t sup_mask = (1ULL << CAP_SYS_ADMIN) | (1ULL << CAP_AUDIT_CONTROL);
+            for (int cap = 0; cap <= CAP_LAST_CAP; cap++) {
+                if (cap < 64 && (sup_mask & (1ULL << cap))) {
+                    continue;
+                }
+                if (prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0 && errno != EINVAL) {
+                    syslog(LOG_WARNING, "Warning: Supervisor failed to drop cap %d: %s", cap, strerror(errno));
+                }
+            }
             (void)set_process_caps(sup_mask, sup_mask);
         }
 
