@@ -387,10 +387,14 @@ EVP_PKEY *load_rsa_pubkey_evp(const char *path, int require_secure_perms,
         BIO_free(bio);
         if (pkey) {
             BIGNUM *bn_n = NULL;
+            BIGNUM *bn_e = NULL;
             if (EVP_PKEY_is_a(pkey, "RSA") &&
-                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &bn_n) == 1 && bn_n) {
+                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_N, &bn_n) == 1 && bn_n &&
+                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_E, &bn_e) == 1 && bn_e) {
                 int num_bytes = BN_num_bytes(bn_n);
-                if (num_bytes == TPM2_RSA2048_KEY_BYTES || num_bytes == TPM2_RSA4096_KEY_BYTES) {
+                int exp_valid = (BN_is_word(bn_e, 65537) == 1);
+                BN_free(bn_e);
+                if (exp_valid && (num_bytes == TPM2_RSA2048_KEY_BYTES || num_bytes == TPM2_RSA4096_KEY_BYTES)) {
                     if (modulus_out) {
                         BN_bn2bin(bn_n, modulus_out);
                     }
@@ -401,10 +405,13 @@ EVP_PKEY *load_rsa_pubkey_evp(const char *path, int require_secure_perms,
                     return pkey;
                 }
                 BN_free(bn_n);
+            } else {
+                if (bn_n) BN_free(bn_n);
+                if (bn_e) BN_free(bn_e);
             }
             EVP_PKEY_free(pkey);
             ERR_clear_error();
-            fprintf(stderr, "Error: PEM public key %s is not a valid 2048/4096-bit RSA key.\n", path);
+            fprintf(stderr, "Error: PEM public key %s is not a valid 2048/4096-bit RSA key with exponent 65537.\n", path);
             return NULL;
         }
         ERR_clear_error();
@@ -419,6 +426,10 @@ EVP_PKEY *load_rsa_pubkey_evp(const char *path, int require_secure_perms,
             (pub.publicArea.unique.rsa.size == TPM2_RSA2048_KEY_BYTES ||
              pub.publicArea.unique.rsa.size == TPM2_RSA4096_KEY_BYTES)) {
             uint32_t exp = pub.publicArea.parameters.rsaDetail.exponent;
+            if (exp != 0 && exp != 65537) {
+                fprintf(stderr, "Error: TPM2B_PUBLIC key %s has unsupported exponent %u (expected 65537).\n", path, exp);
+                return NULL;
+            }
             if (exp == 0) {
                 exp = 65537;
             }
