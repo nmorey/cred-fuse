@@ -103,18 +103,44 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
     }
     uint16_t rsa_ct_len = (uint16_t)rsa_mod_bytes;
 
+    size_t payload_meta_sz = (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) ?
+                             sizeof(struct cred_env_v1_rsa2048) :
+                             sizeof(struct cred_env_v1_rsa4096);
+    size_t header_len = sizeof(struct cred_env_commonhdr) + sizeof(uint16_t) + payload_meta_sz;
+    if (pt_len > SIZE_MAX - header_len) {
+        return -EFBIG;
+    }
+
+    size_t total_len = header_len + pt_len;
+    uint8_t *envelope = malloc(total_len);
+    if (!envelope) {
+        return -ENOMEM;
+    }
+
+    struct cred_env_hdr *hdr = (struct cred_env_hdr *)envelope;
+    memcpy(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN);
+    hdr->common.version = htobe64(CRED_ENV_VERSION_1);
+    hdr->v1.rsa_ct_len = htobe16(rsa_ct_len);
+
+    uint8_t *rsa_ct, *iv, *tag;
+    if (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) {
+        rsa_ct = hdr->v1.rsa2048.rsa_ct;
+        iv = hdr->v1.rsa2048.iv;
+        tag = hdr->v1.rsa2048.tag;
+    } else {
+        rsa_ct = hdr->v1.rsa4096.rsa_ct;
+        iv = hdr->v1.rsa4096.iv;
+        tag = hdr->v1.rsa4096.tag;
+    }
+    uint8_t *ciphertext = envelope + header_len;
+
     uint8_t eph_key[32];
-    uint8_t iv[12];
-    uint8_t tag[16];
-    uint8_t rsa_ct[TPM2_RSA4096_KEY_BYTES];
     char aad[PATH_MAX + 16];
     uint8_t oaep_label[33];
 
     EVP_PKEY_CTX *pctx = NULL;
     EVP_CIPHER_CTX *cctx = NULL;
     uint8_t *label_copy = NULL;
-    uint8_t *ct_buf = NULL;
-    uint8_t *envelope = NULL;
     int ret = -EIO;
 
     ret = format_credential_aad_v1(aad, sizeof(aad), rel_path, mode);
@@ -127,7 +153,7 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
         goto out;
     }
 
-    if (RAND_bytes(eph_key, sizeof(eph_key)) != 1 || RAND_bytes(iv, sizeof(iv)) != 1) {
+    if (RAND_bytes(eph_key, sizeof(eph_key)) != 1 || RAND_bytes(iv, CRED_ENV_IV_LEN) != 1) {
         ret = -EIO;
         goto out;
     }
@@ -155,23 +181,17 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
     }
     label_copy = NULL;
 
-    size_t rsa_encrypted_len = sizeof(rsa_ct);
+    size_t rsa_encrypted_len = rsa_ct_len;
     if (EVP_PKEY_encrypt(pctx, rsa_ct, &rsa_encrypted_len, eph_key, sizeof(eph_key)) <= 0 ||
         rsa_encrypted_len != rsa_ct_len) {
         ret = -EIO;
         goto out;
     }
 
-    ct_buf = malloc(pt_len);
-    if (!ct_buf) {
-        ret = -ENOMEM;
-        goto out;
-    }
-
     cctx = EVP_CIPHER_CTX_new();
     if (!cctx ||
         EVP_EncryptInit_ex(cctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(iv), NULL) != 1 ||
+        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_SET_IVLEN, CRED_ENV_IV_LEN, NULL) != 1 ||
         EVP_EncryptInit_ex(cctx, NULL, NULL, eph_key, iv) != 1) {
         ret = -EIO;
         goto out;
@@ -179,55 +199,23 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
 
     int outlen = 0;
     if (EVP_EncryptUpdate(cctx, NULL, &outlen, (const uint8_t *)aad, (int)strlen(aad)) != 1 ||
-        EVP_EncryptUpdate(cctx, ct_buf, &outlen, plaintext, (int)pt_len) != 1 ||
-        EVP_EncryptFinal_ex(cctx, ct_buf + outlen, &outlen) != 1 ||
-        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_GET_TAG, sizeof(tag), tag) != 1) {
+        EVP_EncryptUpdate(cctx, ciphertext, &outlen, plaintext, (int)pt_len) != 1 ||
+        EVP_EncryptFinal_ex(cctx, ciphertext + outlen, &outlen) != 1 ||
+        EVP_CIPHER_CTX_ctrl(cctx, EVP_CTRL_GCM_GET_TAG, CRED_ENV_TAG_LEN, tag) != 1) {
         ret = -EIO;
         goto out;
     }
 
-    size_t payload_meta_sz = (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) ?
-                             sizeof(struct cred_env_v1_rsa2048) :
-                             sizeof(struct cred_env_v1_rsa4096);
-    size_t header_len = sizeof(struct cred_env_commonhdr) + sizeof(uint16_t) + payload_meta_sz;
-    if (pt_len > SIZE_MAX - header_len) {
-        ret = -EFBIG;
-        goto out;
-    }
-
-    size_t total_len = header_len + pt_len;
-    envelope = malloc(total_len);
-    if (!envelope) {
-        ret = -ENOMEM;
-        goto out;
-    }
-
-    struct cred_env_hdr *hdr = (struct cred_env_hdr *)envelope;
-    memcpy(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN);
-    hdr->common.version = htobe64(CRED_ENV_VERSION_1);
-    hdr->v1.rsa_ct_len = htobe16(rsa_ct_len);
-
-    if (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) {
-        memcpy(hdr->v1.rsa2048.rsa_ct, rsa_ct, TPM2_RSA2048_KEY_BYTES);
-        memcpy(hdr->v1.rsa2048.iv, iv, sizeof(iv));
-        memcpy(hdr->v1.rsa2048.tag, tag, sizeof(tag));
-    } else {
-        memcpy(hdr->v1.rsa4096.rsa_ct, rsa_ct, TPM2_RSA4096_KEY_BYTES);
-        memcpy(hdr->v1.rsa4096.iv, iv, sizeof(iv));
-        memcpy(hdr->v1.rsa4096.tag, tag, sizeof(tag));
-    }
-    memcpy(envelope + header_len, ct_buf, pt_len);
-
     *out_buf = envelope;
     *out_len = total_len;
+    envelope = NULL;
     ret = 0;
 
 out:
     if (pctx) EVP_PKEY_CTX_free(pctx);
     if (cctx) EVP_CIPHER_CTX_free(cctx);
     if (label_copy) OPENSSL_free(label_copy);
-    if (ct_buf) free(ct_buf);
-    if (ret != 0 && envelope) free(envelope);
+    if (envelope) free(envelope);
     OPENSSL_cleanse(eph_key, sizeof(eph_key));
     OPENSSL_cleanse(oaep_label, sizeof(oaep_label));
     OPENSSL_cleanse(aad, sizeof(aad));
