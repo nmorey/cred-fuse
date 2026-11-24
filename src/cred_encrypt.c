@@ -20,7 +20,9 @@
 #include <openssl/err.h>
 #include <openssl/crypto.h>
 
-#include "decryption.h"
+#include "cred_opts.h"
+#include "secure_mem.h"
+#include "pubkey.h"
 #include "envelope.h"
 
 struct cred_fuse_opts global_opts = {0};
@@ -100,10 +102,7 @@ int main(int argc, char *argv[]) {
         mlockall_active = 1;
     }
 
-    if (init_decryption() < 0) {
-        fprintf(stderr, "Error: Failed to initialize cryptographic subsystem.\n");
-        return 1;
-    }
+    init_secure_mem();
 
     const char *pubkey_path = NULL;
     const char *rel_path = NULL;

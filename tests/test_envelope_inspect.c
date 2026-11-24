@@ -9,6 +9,7 @@
 #include <endian.h>
 
 #include "envelope.h"
+#include "cred_opts.h"
 
 struct cred_fuse_opts global_opts = {0};
 int mlockall_active = 0;
@@ -19,7 +20,7 @@ int mlockall_active = 0;
  * ============================================================================
  *
  * HOW TO ADD A NEW HEADER GENERATION (e.g., CRED_ENV v3):
- * 1. Add your version definition to `enum cred_env_version` in decryption.h.
+ * 1. Add your version definition to `enum cred_env_version` in envelope.h.
  * 2. Add an entry to `GENERATION_TESTS[]` below specifying:
  *      - .version                    (e.g., CRED_ENV_VERSION_3)
  *      - .rsa_ct_len                 (e.g., TPM2_RSA2048_KEY_BYTES or TPM2_RSA4096_KEY_BYTES)

@@ -14,13 +14,23 @@ find_package(OpenSSL REQUIRED)
 
 # TSS2 Requirements (libtss2-esys, libtss2-rc, libtss2-tctildr, libtss2-mu)
 pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr tss2-mu)
+pkg_check_modules(TSS2_MU REQUIRED tss2-mu)
 
 # libaudit for security audit logging and rules
 pkg_check_modules(LIBAUDIT REQUIRED audit)
 
 file(GLOB ENVELOPE_SOURCES CONFIGURE_DEPENDS "src/envelope*.c")
 
-add_executable(mount.cred-fuse src/main.c src/decryption.c src/inode.c src/path.c src/audit.c ${ENVELOPE_SOURCES})
+add_executable(mount.cred-fuse
+    src/main.c
+    src/tpm_esys.c
+    src/secure_mem.c
+    src/pubkey.c
+    src/inode.c
+    src/path.c
+    src/audit.c
+    ${ENVELOPE_SOURCES}
+)
 
 target_include_directories(mount.cred-fuse PRIVATE
     ${FUSE3_INCLUDE_DIRS}
@@ -36,19 +46,30 @@ target_link_libraries(mount.cred-fuse PRIVATE
     ${LIBAUDIT_LIBRARIES}
 )
 
-add_executable(cred-encrypt src/cred_encrypt.c src/decryption.c ${ENVELOPE_SOURCES})
+add_executable(cred-encrypt
+    src/cred_encrypt.c
+    src/secure_mem.c
+    src/pubkey.c
+    ${ENVELOPE_SOURCES}
+)
 
 target_include_directories(cred-encrypt PRIVATE
     ${OPENSSL_INCLUDE_DIR}
-    ${TSS2_INCLUDE_DIRS}
+    ${TSS2_MU_INCLUDE_DIRS}
 )
 
 target_link_libraries(cred-encrypt PRIVATE
     OpenSSL::Crypto
-    ${TSS2_LIBRARIES}
+    ${TSS2_MU_LIBRARIES}
 )
 
-add_executable(cred-decrypt src/cred_decrypt.c src/decryption.c ${ENVELOPE_SOURCES})
+add_executable(cred-decrypt
+    src/cred_decrypt.c
+    src/tpm_esys.c
+    src/secure_mem.c
+    src/pubkey.c
+    ${ENVELOPE_SOURCES}
+)
 
 target_include_directories(cred-decrypt PRIVATE
     ${OPENSSL_INCLUDE_DIR}
@@ -94,9 +115,9 @@ else()
         test_lockout
     )
 
-    add_executable(test_envelope_inspect tests/test_envelope_inspect.c src/decryption.c ${ENVELOPE_SOURCES})
-    target_include_directories(test_envelope_inspect PRIVATE src ${OPENSSL_INCLUDE_DIR} ${TSS2_INCLUDE_DIRS})
-    target_link_libraries(test_envelope_inspect PRIVATE OpenSSL::Crypto ${TSS2_LIBRARIES})
+    add_executable(test_envelope_inspect tests/test_envelope_inspect.c src/secure_mem.c src/pubkey.c ${ENVELOPE_SOURCES})
+    target_include_directories(test_envelope_inspect PRIVATE src ${OPENSSL_INCLUDE_DIR} ${TSS2_MU_INCLUDE_DIRS})
+    target_link_libraries(test_envelope_inspect PRIVATE OpenSSL::Crypto ${TSS2_MU_LIBRARIES})
     add_test(NAME test_envelope_inspect COMMAND test_envelope_inspect)
 
     foreach(subtest ${subtests})

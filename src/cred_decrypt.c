@@ -15,7 +15,10 @@
 
 #include <openssl/crypto.h>
 
-#include "decryption.h"
+#include "cred_opts.h"
+#include "tpm.h"
+#include "secure_mem.h"
+#include "pubkey.h"
 #include "envelope.h"
 
 struct cred_fuse_opts global_opts = {0};
@@ -160,8 +163,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char aad[PATH_MAX + 16];
-    if (format_credential_aad(aad, sizeof(aad), rel_path, mode) < 0) {
+    const char *clean_path = NULL;
+    if (validate_relative_path(rel_path, &clean_path) < 0) {
         fprintf(stderr, "Error: Invalid relative path '%s' (must be non-empty and contain no '..' components).\n", rel_path);
         return 1;
     }
@@ -181,12 +184,12 @@ int main(int argc, char *argv[]) {
     }
     global_opts.max_file_size = MAX_ALLOWED_FILE_SIZE;
 
-    if (init_decryption() < 0) {
-        fprintf(stderr, "Error: Failed to initialize decryption subsystem.\n");
+    if (tpm_init(global_opts.tcti, global_opts.tpm_handle, global_opts.tpm_pubkey) < 0) {
+        fprintf(stderr, "Error: Failed to initialize TPM subsystem.\n");
         return 1;
     }
 
-    if (check_tpm_lockout() < 0) {
+    if (tpm_check_health() < 0) {
         fprintf(stderr, "Error: TPM lockout check or public key verification failed.\n");
         return 1;
     }

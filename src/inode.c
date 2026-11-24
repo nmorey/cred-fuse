@@ -1,5 +1,4 @@
 #include "inode.h"
-#include "decryption.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>

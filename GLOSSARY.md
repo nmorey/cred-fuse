@@ -27,3 +27,11 @@ _Avoid_: Decrypted length, payload size
 **Envelope Inspector**:
 The version-dispatched module component that parses envelope headers, validates structural integrity, and extracts typed payload references.
 _Avoid_: Header validator, size extractor
+
+**Secure Memory**:
+Locked, non-dumpable in-memory buffers (`mlock`) holding sensitive cryptographic keys or decrypted plaintext secrets, guaranteed to be zeroized (`OPENSSL_cleanse`) immediately upon release.
+_Avoid_: Protected RAM, safe heap
+
+**TPM Adapter**:
+The hardware abstraction module responsible for TPM 2.0 communication, persistent handle verification, transport auth session parameter encryption, and hardware RSA-OAEP unwrapping.
+_Avoid_: TPM driver, TPM manager, TPM service

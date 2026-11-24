@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "envelope.h"
-#include "decryption.h"
+#include "secure_mem.h"
+#include "tpm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,8 +146,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
 
     const struct cred_env_hdr *hdr = (const struct cred_env_hdr *)enc_data;
     struct env_data ed = {0};
-    ssize_t pt_size = inspect_envelope_v2(hdr, enc_len, (off_t)enc_len,
-                                          (size_t)global_opts.max_file_size, &ed);
+    ssize_t pt_size = inspect_envelope_v2(hdr, enc_len, (off_t)enc_len, 0, &ed);
     if (pt_size < 0) {
         return (int)pt_size;
     }
@@ -168,7 +168,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
     }
 
     struct decrypted_node eph_secret = { 0 };
-    r = tpm2_rsa_decrypt(ed.v2.rsa_ct, ed.v2.rsa_ct_len, label, &eph_secret);
+    r = tpm_unwrap(ed.v2.rsa_ct, ed.v2.rsa_ct_len, label, &eph_secret);
     OPENSSL_cleanse(label, sizeof(label));
     if (r < 0) {
         clean_decrypted_node(&eph_secret);

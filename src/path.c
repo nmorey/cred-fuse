@@ -1,7 +1,7 @@
 #define _DEFAULT_SOURCE
 #include "path.h"
 #include "inode.h"
-#include "decryption.h"
+#include "cred_opts.h"
 #include "envelope.h"
 
 #include <stdio.h>

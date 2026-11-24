@@ -47,7 +47,10 @@
 #include <sys/wait.h>
 #include <signal.h>
 
-#include "decryption.h"
+#include "cred_opts.h"
+#include "tpm.h"
+#include "secure_mem.h"
+#include "envelope.h"
 #include "inode.h"
 #include "path.h"
 
@@ -893,8 +896,8 @@ int main(int argc, char *argv[]) {
         goto err_early;
     }
 
-    if (init_decryption() != 0) {
-        fprintf(stderr, "Failed to initialize decryption\n");
+    if (tpm_init(global_opts.tcti, global_opts.tpm_handle, global_opts.tpm_pubkey) != 0) {
+        fprintf(stderr, "Failed to initialize TPM subsystem\n");
         ret = 1;
         goto err_early;
     }
@@ -912,7 +915,7 @@ int main(int argc, char *argv[]) {
      * a clean slate before fuse_daemonize() forks.
      */
     if (!getenv("_CREDFUSE_LOCKOUT_CHECKED")) {
-        if (check_tpm_lockout() != 0) {
+        if (tpm_check_health() != 0) {
             ret = 1;
             goto err_early;
         }

@@ -5,7 +5,20 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#include "decryption.h"
+#include "secure_mem.h"
+#include "pubkey.h"
+
+#define CRED_ENV_MAGIC "CRED_ENV"
+#define CRED_ENV_MAGIC_LEN 8
+
+enum cred_env_version {
+    CRED_ENV_VERSION_INVALID = 0,
+    CRED_ENV_VERSION_1       = 1,
+    CRED_ENV_VERSION_2       = 2,
+    _CRED_ENV_VERSION_MAX,
+};
+
+#define CRED_ENV_CUR_VERSION CRED_ENV_VERSION_2
 
 #define CRED_ENV_IV_LEN 12
 #define CRED_ENV_TAG_LEN 16
@@ -109,6 +122,9 @@ ssize_t envelope_inspect_file(int fd, off_t raw_size, size_t max_size);
 /* Common path validation helper: ensures non-empty, no leading slashes, no '..' traversal */
 int validate_relative_path(const char *rel_path, const char **clean_path_out);
 
+/* Mode parser helper */
+int parse_octal_mode(const char *mode_str, mode_t *mode_out);
+
 /* Shared low-level AES-256-GCM decryptor */
 int do_aes_decrypt(const uint8_t *iv,
                    const uint8_t *tag,
@@ -117,10 +133,17 @@ int do_aes_decrypt(const uint8_t *iv,
                    const struct decrypted_node *aes_key,
                    struct decrypted_node *out);
 
-/* Shared low-level TPM RSA-OAEP decryptor */
-int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
-                     const uint8_t oaep_label[33],
+/* Top-level envelope decryption dispatch */
+int decrypt_envelope(const uint8_t *enc_data, size_t enc_len,
+                     const char *rel_path, mode_t mode,
                      struct decrypted_node *out);
+
+int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
+                             const char *rel_path, mode_t mode,
+                             struct decrypted_node *out,
+                             uint64_t *version_out);
+
+int decrypt_credential(int fd, const char *rel_path, struct decrypted_node *out);
 
 /* Version 1 Envelope Handlers */
 ssize_t inspect_envelope_v1_layout(const struct cred_env_hdr *hdr, size_t hdr_len,
