@@ -83,8 +83,28 @@ typedef int (*encrypt_envelope_fn)(EVP_PKEY *pkey, const char *rel_path, mode_t 
                                    const uint8_t *plaintext, size_t pt_len,
                                    uint8_t **out_buf, size_t *out_len);
 
+typedef ssize_t (*inspect_envelope_fn)(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                       off_t raw_size, size_t max_size,
+                                       struct env_data *out);
+
 extern const decrypt_envelope_fn envelope_decryptors[_CRED_ENV_VERSION_MAX];
 extern const encrypt_envelope_fn envelope_encryptors[_CRED_ENV_VERSION_MAX];
+extern const inspect_envelope_fn envelope_inspectors[_CRED_ENV_VERSION_MAX];
+
+/* Common inspection interfaces */
+ssize_t envelope_inspect_header_version(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                        off_t raw_size, size_t max_size,
+                                        uint64_t min_version,
+                                        struct env_data *out);
+
+ssize_t envelope_inspect_file_version(int fd, off_t raw_size, size_t max_size,
+                                      uint64_t min_version,
+                                      struct env_data *out);
+
+ssize_t envelope_inspect_header(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                off_t raw_size, size_t max_size);
+
+ssize_t envelope_inspect_file(int fd, off_t raw_size, size_t max_size);
 
 /* Common path validation helper: ensures non-empty, no leading slashes, no '..' traversal */
 int validate_relative_path(const char *rel_path, const char **clean_path_out);
@@ -103,6 +123,12 @@ int tpm2_rsa_decrypt(const uint8_t *in_data, size_t in_len,
                      struct decrypted_node *out);
 
 /* Version 1 Envelope Handlers */
+ssize_t inspect_envelope_v1_layout(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                   off_t raw_size, size_t max_size,
+                                   struct env_data *out);
+ssize_t inspect_envelope_v1(const struct cred_env_hdr *hdr, size_t hdr_len,
+                            off_t raw_size, size_t max_size,
+                            struct env_data *out);
 int format_credential_aad_v1(char *buf, size_t buf_sz, const char *rel_path, mode_t mode);
 int compute_oaep_label_v1(const char *aad, uint8_t label_buf[33]);
 int decrypt_envelope_v1(const uint8_t *enc_data, size_t enc_len,
@@ -116,6 +142,9 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
 #endif
 
 /* Version 2 Envelope Handlers */
+ssize_t inspect_envelope_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
+                            off_t raw_size, size_t max_size,
+                            struct env_data *out);
 int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
                         const uint8_t *salt, size_t salt_len,
                         const char *info,

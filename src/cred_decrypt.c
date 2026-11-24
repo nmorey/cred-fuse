@@ -206,7 +206,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    size_t max_enc_size = (size_t)MAX_ALLOWED_FILE_SIZE + CRED_ENV_MAX_OVERHEAD;
+    size_t max_enc_size = (size_t)MAX_ALLOWED_FILE_SIZE + sizeof(struct cred_env_hdr);
     int read_res = read_all_stream(in_fd, &enc_buf, &enc_len, max_enc_size);
     if (read_res < 0) {
         if (read_res == -EFBIG) {

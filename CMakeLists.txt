@@ -18,7 +18,7 @@ pkg_check_modules(TSS2 REQUIRED tss2-esys tss2-rc tss2-tctildr tss2-mu)
 # libaudit for security audit logging and rules
 pkg_check_modules(LIBAUDIT REQUIRED audit)
 
-file(GLOB ENVELOPE_SOURCES CONFIGURE_DEPENDS "src/envelope_v*.c")
+file(GLOB ENVELOPE_SOURCES CONFIGURE_DEPENDS "src/envelope*.c")
 
 add_executable(mount.cred-fuse src/main.c src/decryption.c src/inode.c src/path.c src/audit.c ${ENVELOPE_SOURCES})
 
@@ -93,6 +93,11 @@ else()
         test_tcti_validation
         test_lockout
     )
+
+    add_executable(test_envelope_inspect tests/test_envelope_inspect.c src/decryption.c ${ENVELOPE_SOURCES})
+    target_include_directories(test_envelope_inspect PRIVATE src ${OPENSSL_INCLUDE_DIR} ${TSS2_INCLUDE_DIRS})
+    target_link_libraries(test_envelope_inspect PRIVATE OpenSSL::Crypto ${TSS2_LIBRARIES})
+    add_test(NAME test_envelope_inspect COMMAND test_envelope_inspect)
 
     foreach(subtest ${subtests})
         add_test(NAME ${subtest} COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/${subtest}.sh $<TARGET_FILE:mount.cred-fuse> ${CMAKE_CURRENT_BINARY_DIR})

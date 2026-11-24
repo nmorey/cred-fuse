@@ -1049,7 +1049,7 @@ int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
         return -EINVAL;
     }
 
-    if (enc_len < CRED_ENV_MIN_OVERHEAD) {
+    if (enc_len < sizeof(struct cred_env_commonhdr)) {
         return -EBADMSG;
     }
 
@@ -1099,7 +1099,12 @@ int decrypt_credential(int fd,
     mode_t file_mode = 0;
     int r;
 
-    size_t max_enc_size = (size_t)global_opts.max_file_size + CRED_ENV_MAX_OVERHEAD;
+    if (global_opts.max_file_size <= 0 ||
+        (size_t)global_opts.max_file_size > SIZE_MAX - sizeof(struct cred_env_hdr)) {
+        return -EINVAL;
+    }
+
+    size_t max_enc_size = (size_t)global_opts.max_file_size + sizeof(struct cred_env_hdr);
     r = read_file_fd(fd, &enc_data, &enc_len, &file_mode, max_enc_size);
     if (r < 0) {
         return r;

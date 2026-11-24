@@ -112,18 +112,15 @@ int compute_oaep_label_v2(const uint8_t *aad, size_t aad_len, uint8_t label_buf[
     return 0;
 }
 
-int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
-                        const char *rel_path, mode_t mode,
-                        struct decrypted_node *out) {
-    if (!enc_data || !rel_path || !out) {
+#define CRED_ENV_V2_MIN_HDR_SIZE (sizeof(struct cred_env_commonhdr) + sizeof(uint16_t))
+
+ssize_t inspect_envelope_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
+                            off_t raw_size, size_t max_size,
+                            struct env_data *out) {
+    if (!hdr || hdr_len < CRED_ENV_V2_MIN_HDR_SIZE || raw_size < 0) {
         return -EINVAL;
     }
 
-    if (enc_len < CRED_ENV_MIN_OVERHEAD) {
-        return -EBADMSG;
-    }
-
-    const struct cred_env_hdr *hdr = (const struct cred_env_hdr *)enc_data;
     if (memcmp(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
         return -EBADMSG;
     }
@@ -132,40 +129,33 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
         return -EPROTONOSUPPORT;
     }
 
-    uint16_t rsa_ct_len = be16toh(hdr->v2.rsa_ct_len);
-    if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
-        return -EBADMSG;
+    ssize_t ret = inspect_envelope_v1_layout(hdr, hdr_len, raw_size, max_size, out);
+    if (ret >= 0 && out) {
+        out->version = CRED_ENV_VERSION_2;
+    }
+    return ret;
+}
+
+int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
+                        const char *rel_path, mode_t mode,
+                        struct decrypted_node *out) {
+    if (!enc_data || !rel_path || !out) {
+        return -EINVAL;
     }
 
-    size_t header_len = CRED_ENV_FIXED_OVERHEAD + (size_t)rsa_ct_len;
-    if (enc_len <= header_len) {
-        return -EBADMSG;
-    }
-
-    const uint8_t *rsa_ct = NULL;
-    const uint8_t *iv = NULL;
-    const uint8_t *tag = NULL;
-    if (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) {
-        rsa_ct = hdr->v2.rsa2048.rsa_ct;
-        iv = hdr->v2.rsa2048.iv;
-        tag = hdr->v2.rsa2048.tag;
-    } else {
-        rsa_ct = hdr->v2.rsa4096.rsa_ct;
-        iv = hdr->v2.rsa4096.iv;
-        tag = hdr->v2.rsa4096.tag;
-    }
-    const uint8_t *ciphertext = enc_data + header_len;
-    size_t ciphertext_len = enc_len - header_len;
-
-    if (global_opts.max_file_size > 0 && ciphertext_len > (size_t)global_opts.max_file_size) {
-        return -EFBIG;
+    const struct cred_env_hdr *hdr = (const struct cred_env_hdr *)enc_data;
+    struct env_data ed = {0};
+    ssize_t pt_size = inspect_envelope_v2(hdr, enc_len, (off_t)enc_len,
+                                          (size_t)global_opts.max_file_size, &ed);
+    if (pt_size < 0) {
+        return (int)pt_size;
     }
 
     uint8_t aad[PATH_MAX + 64];
     size_t aad_len = 0;
     int r = format_credential_aad_v2(aad, sizeof(aad), &aad_len,
-                                     rsa_ct_len, (uint32_t)ciphertext_len,
-                                     iv, rel_path, mode);
+                                     ed.v2.rsa_ct_len, (uint32_t)ed.v2.plaintext_len,
+                                     ed.v2.iv, rel_path, mode);
     if (r < 0) {
         return r;
     }
@@ -178,7 +168,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
     }
 
     struct decrypted_node eph_secret = { 0 };
-    r = tpm2_rsa_decrypt(rsa_ct, rsa_ct_len, label, &eph_secret);
+    r = tpm2_rsa_decrypt(ed.v2.rsa_ct, ed.v2.rsa_ct_len, label, &eph_secret);
     OPENSSL_cleanse(label, sizeof(label));
     if (r < 0) {
         clean_decrypted_node(&eph_secret);
@@ -194,7 +184,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
 
     uint8_t aes_key_bytes[32];
     r = derive_hkdf_aes_key(eph_secret.buf, eph_secret.len,
-                            iv, 12,
+                            ed.v2.iv, 12,
                             CRED_ENV_V2_KDF_INFO,
                             aes_key_bytes);
     clean_decrypted_node(&eph_secret);
@@ -210,7 +200,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
         .uid_slot = 0
     };
 
-    r = do_aes_decrypt(iv, tag, ciphertext, ciphertext_len,
+    r = do_aes_decrypt(ed.v2.iv, ed.v2.tag, ed.v2.ciphertext, ed.v2.plaintext_len,
                        aad, aad_len,
                        &aes_key_node, out);
 
@@ -339,7 +329,14 @@ int encrypt_envelope_v2(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
     OPENSSL_cleanse(aes_key, sizeof(aes_key));
     OPENSSL_cleanse(aad, sizeof(aad));
 
-    size_t header_len = CRED_ENV_FIXED_OVERHEAD + rsa_ct_len;
+    size_t payload_meta_sz = (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) ?
+                             sizeof(struct cred_env_v1_rsa2048) :
+                             sizeof(struct cred_env_v1_rsa4096);
+    size_t header_len = sizeof(struct cred_env_commonhdr) + sizeof(uint16_t) + payload_meta_sz;
+    if (pt_len > SIZE_MAX - header_len) {
+        free(ct_buf);
+        return -EFBIG;
+    }
     size_t total_len = header_len + pt_len;
     uint8_t *envelope = malloc(total_len);
     if (!envelope) {

@@ -112,49 +112,16 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
             return -EACCES;
         }
 
-        struct cred_env_hdr hdr;
-        ssize_t n = pread(fd, &hdr, 18, 0);
-        if (n != 18) {
-            close(fd);
-            return -ENOENT;
-        }
-
-        if (memcmp(hdr.common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
-            close(fd);
-            return -ENOENT;
-        }
-
-        uint64_t file_ver = be64toh(hdr.common.version);
-        if (file_ver != CRED_ENV_CUR_VERSION) {
-            if (file_ver == CRED_ENV_VERSION_1) {
-                syslog(LOG_ERR, "Encountered deprecated CRED_ENV v1 file '%s'; re-encrypt to v2 format with cred-encrypt", rel_path ? rel_path : target);
-            } else {
-                syslog(LOG_ERR, "Encountered unsupported CRED_ENV version %llu file '%s' (current format is v%llu)",
-                       (unsigned long long)file_ver, rel_path ? rel_path : target, (unsigned long long)CRED_ENV_CUR_VERSION);
+        ssize_t pt_size = envelope_inspect_file(fd, st_out->st_size, (size_t)global_opts.max_file_size);
+        if (pt_size < 0) {
+            if (pt_size == -EPROTONOSUPPORT) {
+                syslog(LOG_ERR, "Encountered unsupported CRED_ENV version in '%s'", rel_path ? rel_path : target);
             }
             close(fd);
             return -ENOENT;
         }
 
-        uint16_t rsa_ct_len = be16toh(hdr.v2.rsa_ct_len);
-        if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
-            close(fd);
-            return -ENOENT;
-        }
-
-        off_t overhead = (off_t)(CRED_ENV_FIXED_OVERHEAD + rsa_ct_len);
-        if (st_out->st_size <= overhead) {
-            close(fd);
-            return -ENOENT;
-        }
-
-        off_t plaintext_size = st_out->st_size - overhead;
-        if (plaintext_size > (off_t)global_opts.max_file_size) {
-            close(fd);
-            return -ENOENT;
-        }
-
-        st_out->st_size = plaintext_size;
+        st_out->st_size = (off_t)pt_size;
     }
 
     return fd;

@@ -23,3 +23,7 @@ _Avoid_: Source directory, encrypted store
 **Plaintext Size**:
 The unencrypted byte length of a credential, computed by subtracting the envelope overhead from the backing store file size.
 _Avoid_: Decrypted length, payload size
+
+**Envelope Inspector**:
+The version-dispatched module component that parses envelope headers, validates structural integrity, and extracts typed payload references.
+_Avoid_: Header validator, size extractor
