@@ -122,6 +122,15 @@ ssize_t envelope_inspect_file(int fd, off_t raw_size, size_t max_size);
 /* Common path validation helper: ensures non-empty, no leading slashes, no '..' traversal */
 int validate_relative_path(const char *rel_path, const char **clean_path_out);
 
+/* Common RSA-OAEP label computation (SHA-256 hex string) */
+int compute_oaep_label(const void *aad, size_t aad_len, uint8_t label_buf[33]);
+
+/* Common v1/v2 envelope layout inspector */
+ssize_t inspect_envelope_common_v1_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                      off_t raw_size, size_t max_size,
+                                      uint64_t expected_version,
+                                      struct env_data *out);
+
 /* Mode parser helper */
 int parse_octal_mode(const char *mode_str, mode_t *mode_out);
 
@@ -146,14 +155,9 @@ int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
 int decrypt_credential(int fd, const char *rel_path, struct decrypted_node *out);
 
 /* Version 1 Envelope Handlers */
-ssize_t inspect_envelope_v1_layout(const struct cred_env_hdr *hdr, size_t hdr_len,
-                                   off_t raw_size, size_t max_size,
-                                   struct env_data *out);
 ssize_t inspect_envelope_v1(const struct cred_env_hdr *hdr, size_t hdr_len,
                             off_t raw_size, size_t max_size,
                             struct env_data *out);
-int format_credential_aad_v1(char *buf, size_t buf_sz, const char *rel_path, mode_t mode);
-int compute_oaep_label_v1(const char *aad, uint8_t label_buf[33]);
 int decrypt_envelope_v1(const uint8_t *enc_data, size_t enc_len,
                         const char *rel_path, mode_t mode,
                         struct decrypted_node *out);
@@ -168,15 +172,6 @@ int encrypt_envelope_v1(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
 ssize_t inspect_envelope_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
                             off_t raw_size, size_t max_size,
                             struct env_data *out);
-int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
-                        const uint8_t *salt, size_t salt_len,
-                        const char *info,
-                        uint8_t aes_key_out[32]);
-int format_credential_aad_v2(uint8_t *buf, size_t buf_sz, size_t *aad_len_out,
-                             uint16_t rsa_ct_len, uint32_t ciphertext_len,
-                             const uint8_t iv[12],
-                             const char *rel_path, mode_t mode);
-int compute_oaep_label_v2(const uint8_t *aad, size_t aad_len, uint8_t label_buf[33]);
 int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
                         const char *rel_path, mode_t mode,
                         struct decrypted_node *out);

@@ -29,6 +29,145 @@ __attribute__((weak)) int tpm_unwrap(const uint8_t *in_data, size_t in_len,
     return -ENOSYS;
 }
 
+int validate_relative_path(const char *rel_path, const char **clean_path_out) {
+    if (!rel_path) {
+        return -EINVAL;
+    }
+    while (*rel_path == '/') {
+        rel_path++;
+    }
+    if (*rel_path == '\0') {
+        return -EINVAL;
+    }
+
+    const char *p = rel_path;
+    while (*p) {
+        if (*p == '/') {
+            return -EINVAL;
+        }
+        const char *end = p;
+        while (*end && *end != '/') {
+            end++;
+        }
+        size_t comp_len = (size_t)(end - p);
+        if ((comp_len == 1 && p[0] == '.') ||
+            (comp_len == 2 && p[0] == '.' && p[1] == '.')) {
+            return -EINVAL;
+        }
+        for (size_t i = 0; i < comp_len; i++) {
+            char c = p[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-')) {
+                return -EINVAL;
+            }
+        }
+        if (*end == '/') {
+            if (*(end + 1) == '\0') {
+                return -EINVAL;
+            }
+            p = end + 1;
+        } else {
+            p = end;
+        }
+    }
+
+    if (clean_path_out) {
+        *clean_path_out = rel_path;
+    }
+    return 0;
+}
+
+int compute_oaep_label(const void *aad, size_t aad_len, uint8_t label_buf[33]) {
+    if (!aad || aad_len == 0 || !label_buf) {
+        return -EINVAL;
+    }
+
+    uint8_t digest[32];
+    unsigned int digest_len = 0;
+    if (EVP_Digest(aad, aad_len, digest, &digest_len, EVP_sha256(), NULL) != 1 || digest_len != 32) {
+        return -EIO;
+    }
+
+    static const char hex_chars[] = "0123456789abcdef";
+    for (size_t i = 0; i < 16; i++) {
+        label_buf[i * 2] = (uint8_t)hex_chars[(digest[i] >> 4) & 0x0f];
+        label_buf[i * 2 + 1] = (uint8_t)hex_chars[digest[i] & 0x0f];
+    }
+    label_buf[32] = '\0';
+
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return 0;
+}
+
+ssize_t inspect_envelope_common_v1_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
+                                      off_t raw_size, size_t max_size,
+                                      uint64_t expected_version,
+                                      struct env_data *out) {
+    size_t min_hdr = sizeof(struct cred_env_commonhdr) + sizeof(uint16_t);
+    if (!hdr || hdr_len < min_hdr || raw_size < 0) {
+        return -EINVAL;
+    }
+
+    if (memcmp(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
+        return -EBADMSG;
+    }
+
+    if (be64toh(hdr->common.version) != expected_version) {
+        return -EPROTONOSUPPORT;
+    }
+
+    uint16_t rsa_ct_len = be16toh(hdr->v1.rsa_ct_len);
+    size_t payload_meta_sz;
+    if (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) {
+        payload_meta_sz = sizeof(struct cred_env_v1_rsa2048);
+    } else if (rsa_ct_len == TPM2_RSA4096_KEY_BYTES) {
+        payload_meta_sz = sizeof(struct cred_env_v1_rsa4096);
+    } else {
+        return -EBADMSG;
+    }
+
+    off_t overhead = (off_t)(min_hdr + payload_meta_sz);
+    if (raw_size <= overhead) {
+        return -EBADMSG;
+    }
+
+    off_t plaintext_size = raw_size - overhead;
+    if (plaintext_size > (off_t)SSIZE_MAX) {
+        return -EFBIG;
+    }
+    if (max_size > 0 && (size_t)plaintext_size > max_size) {
+        return -EFBIG;
+    }
+
+    if (out) {
+        out->version = expected_version;
+        out->plaintext_len = (size_t)plaintext_size;
+        out->v1.rsa_ct_len = rsa_ct_len;
+        out->v1.overhead = (size_t)overhead;
+        out->v1.plaintext_len = (size_t)plaintext_size;
+
+        if (hdr_len >= (size_t)overhead) {
+            if (rsa_ct_len == TPM2_RSA2048_KEY_BYTES) {
+                out->v1.rsa_ct = hdr->v1.rsa2048.rsa_ct;
+                out->v1.iv = hdr->v1.rsa2048.iv;
+                out->v1.tag = hdr->v1.rsa2048.tag;
+            } else {
+                out->v1.rsa_ct = hdr->v1.rsa4096.rsa_ct;
+                out->v1.iv = hdr->v1.rsa4096.iv;
+                out->v1.tag = hdr->v1.rsa4096.tag;
+            }
+            out->v1.ciphertext = ((const uint8_t *)hdr) + overhead;
+        } else {
+            out->v1.rsa_ct = NULL;
+            out->v1.iv = NULL;
+            out->v1.tag = NULL;
+            out->v1.ciphertext = NULL;
+        }
+    }
+
+    return (ssize_t)plaintext_size;
+}
+
 const inspect_envelope_fn envelope_inspectors[_CRED_ENV_VERSION_MAX] = {
     [CRED_ENV_VERSION_1] = inspect_envelope_v1,
     [CRED_ENV_VERSION_2] = inspect_envelope_v2,

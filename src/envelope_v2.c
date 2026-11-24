@@ -18,10 +18,10 @@
 
 #define CRED_ENV_V2_KDF_INFO "CRED_ENV_v2_AES256GCM"
 
-int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
-                        const uint8_t *salt, size_t salt_len,
-                        const char *info,
-                        uint8_t aes_key_out[32]) {
+static int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
+                              const uint8_t *salt, size_t salt_len,
+                              const char *info,
+                              uint8_t aes_key_out[32]) {
     if (!eph_secret || secret_len == 0 || !salt || salt_len == 0 || !info || !aes_key_out) {
         return -EINVAL;
     }
@@ -49,10 +49,10 @@ int derive_hkdf_aes_key(const uint8_t *eph_secret, size_t secret_len,
     return ret;
 }
 
-int format_credential_aad_v2(uint8_t *buf, size_t buf_sz, size_t *aad_len_out,
-                             uint16_t rsa_ct_len, uint32_t ciphertext_len,
-                             const uint8_t iv[12],
-                             const char *rel_path, mode_t mode) {
+static int format_credential_aad_v2(uint8_t *buf, size_t buf_sz, size_t *aad_len_out,
+                                  uint16_t rsa_ct_len, uint32_t ciphertext_len,
+                                  const uint8_t iv[12],
+                                  const char *rel_path, mode_t mode) {
     if (!buf || buf_sz == 0 || !iv || !rel_path || !aad_len_out) {
         return -EINVAL;
     }
@@ -91,50 +91,10 @@ int format_credential_aad_v2(uint8_t *buf, size_t buf_sz, size_t *aad_len_out,
     return 0;
 }
 
-int compute_oaep_label_v2(const uint8_t *aad, size_t aad_len, uint8_t label_buf[33]) {
-    if (!aad || aad_len == 0 || !label_buf) {
-        return -EINVAL;
-    }
-
-    uint8_t digest[32];
-    unsigned int digest_len = 0;
-    if (EVP_Digest(aad, aad_len, digest, &digest_len, EVP_sha256(), NULL) != 1 || digest_len != 32) {
-        return -EIO;
-    }
-
-    static const char hex_chars[] = "0123456789abcdef";
-    for (size_t i = 0; i < 16; i++) {
-        label_buf[i * 2] = (uint8_t)hex_chars[(digest[i] >> 4) & 0x0f];
-        label_buf[i * 2 + 1] = (uint8_t)hex_chars[digest[i] & 0x0f];
-    }
-    label_buf[32] = '\0';
-
-    OPENSSL_cleanse(digest, sizeof(digest));
-    return 0;
-}
-
-#define CRED_ENV_V2_MIN_HDR_SIZE (sizeof(struct cred_env_commonhdr) + sizeof(uint16_t))
-
 ssize_t inspect_envelope_v2(const struct cred_env_hdr *hdr, size_t hdr_len,
                             off_t raw_size, size_t max_size,
                             struct env_data *out) {
-    if (!hdr || hdr_len < CRED_ENV_V2_MIN_HDR_SIZE || raw_size < 0) {
-        return -EINVAL;
-    }
-
-    if (memcmp(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
-        return -EBADMSG;
-    }
-
-    if (be64toh(hdr->common.version) != CRED_ENV_VERSION_2) {
-        return -EPROTONOSUPPORT;
-    }
-
-    ssize_t ret = inspect_envelope_v1_layout(hdr, hdr_len, raw_size, max_size, out);
-    if (ret >= 0 && out) {
-        out->version = CRED_ENV_VERSION_2;
-    }
-    return ret;
+    return inspect_envelope_common_v1_v2(hdr, hdr_len, raw_size, max_size, CRED_ENV_VERSION_2, out);
 }
 
 int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
@@ -161,7 +121,7 @@ int decrypt_envelope_v2(const uint8_t *enc_data, size_t enc_len,
     }
 
     uint8_t label[33];
-    r = compute_oaep_label_v2(aad, aad_len, label);
+    r = compute_oaep_label(aad, aad_len, label);
     if (r < 0) {
         OPENSSL_cleanse(aad, sizeof(aad));
         return r;
@@ -240,7 +200,7 @@ int encrypt_envelope_v2(EVP_PKEY *pkey, const char *rel_path, mode_t mode,
         return -EINVAL;
     }
 
-    if (compute_oaep_label_v2(aad, aad_len, oaep_label) < 0) {
+    if (compute_oaep_label(aad, aad_len, oaep_label) < 0) {
         OPENSSL_cleanse(eph_secret, sizeof(eph_secret));
         OPENSSL_cleanse(aad, sizeof(aad));
         return -EIO;
