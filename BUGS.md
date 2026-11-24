@@ -10,8 +10,7 @@
 
 An adversarial source code security review was performed across the `cred-fuse` codebase, evaluating Linux kernel interfaces, FUSE filesystem operations, TPM 2.0 communication channels (`libtss2`), cryptographic envelope handling (`CRED_ENV`), privilege boundaries, and process lifecycle management.
 
-A total of **3 security vulnerabilities and design weaknesses** are tracked for remediation:
-- **Medium Severity:** 1
+A total of **2 security vulnerabilities and design weaknesses** are tracked for remediation:
 - **Low Severity:** 1
 - **Informational:** 1
 
@@ -21,19 +20,7 @@ A total of **3 security vulnerabilities and design weaknesses** are tracked for 
 
 ## Detailed Findings
 
-### 1. Data Race on `pinned_key.session_aes_bits` in Multi-Threaded FUSE Daemon
-- **Severity:** Medium
-- **Location:** `src/tpm_esys.c`, lines 404, 460, 463
-- **Vulnerability Mechanism:**  
-  In `tpm_unwrap`, `pinned_key.session_aes_bits` is read at line 404 without acquiring `pinned_key.lock`. When negotiating dynamic AES-256 vs. AES-128 CFB session encryption, worker threads update `pinned_key.session_aes_bits` on lines 460 and 463 without holding `pinned_key.lock`.
-- **Threat Scenario:**  
-  Under concurrent file opens in a multi-threaded FUSE session (`fuse_session_loop_mt` with up to 10 threads), concurrent unsynchronized reads and writes to `pinned_key.session_aes_bits` cause data race conditions. Threads may read torn values or simultaneously initiate conflicting session negotiations, leading to transient TPM transport session failures (`TPM2_RC_VALUE 0x4c4`).
-- **Concrete Remediation:**  
-  Protect access to `session_aes_bits` using `pinned_key.lock` or use C11 atomic operations.
-
----
-
-### 2. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
+### 1. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
 - **Severity:** Low
 - **Location:** `src/main.c`, lines 238 & 558; `src/inode.c`, lines 354–365
 - **Vulnerability Mechanism:**  
@@ -45,7 +32,7 @@ A total of **3 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 3. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
+### 2. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
 - **Severity:** Informational / Defense-in-Depth
 - **Location:** `src/tpm_esys.c`, lines 538–548
 - **Vulnerability Mechanism:**  

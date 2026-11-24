@@ -249,7 +249,7 @@ int tpm_init(const char *tcti, uint32_t handle, const char *pubkey_path) {
     pthread_mutex_lock(&pinned_key.lock);
     pinned_key.modulus_len = 0;
     memset(&pinned_key.name, 0, sizeof(pinned_key.name));
-    pinned_key.session_aes_bits = 0;
+    __atomic_store_n(&pinned_key.session_aes_bits, 0, __ATOMIC_RELEASE);
 
     if (cached_tcti) {
         free(cached_tcti);
@@ -401,7 +401,8 @@ int tpm_unwrap(const uint8_t *in_data, size_t in_len,
 
     memcpy(label.buffer, oaep_label, 33);
 
-    uint16_t aes_bits = pinned_key.session_aes_bits ? pinned_key.session_aes_bits : 256;
+    uint16_t cached_bits = __atomic_load_n(&pinned_key.session_aes_bits, __ATOMIC_ACQUIRE);
+    uint16_t aes_bits = cached_bits ? cached_bits : 256;
     TPMT_SYM_DEF symmetric = {
         .algorithm = TPM2_ALG_AES,
         .keyBits = { .aes = aes_bits },
@@ -457,10 +458,10 @@ int tpm_unwrap(const uint8_t *in_data, size_t in_len,
                                    NULL, TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
                                    &session_handle);
         if (rc == TSS2_RC_SUCCESS) {
-            pinned_key.session_aes_bits = 128;
+            __atomic_store_n(&pinned_key.session_aes_bits, 128, __ATOMIC_RELEASE);
         }
-    } else if (rc == TSS2_RC_SUCCESS && pinned_key.session_aes_bits == 0) {
-        pinned_key.session_aes_bits = 256;
+    } else if (rc == TSS2_RC_SUCCESS && cached_bits == 0) {
+        __atomic_store_n(&pinned_key.session_aes_bits, 256, __ATOMIC_RELEASE);
     }
     if (rc != TSS2_RC_SUCCESS) {
         syslog(LOG_ERR, "tpm_unwrap: Esys_StartAuthSession failed: %s (0x%x)", Tss2_RC_Decode(rc), rc);
@@ -546,6 +547,6 @@ void tpm_cleanup(void) {
     }
     pinned_key.modulus_len = 0;
     memset(&pinned_key.name, 0, sizeof(pinned_key.name));
-    pinned_key.session_aes_bits = 0;
+    __atomic_store_n(&pinned_key.session_aes_bits, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&pinned_key.lock);
 }
