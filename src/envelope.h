@@ -7,6 +7,74 @@
 
 #include "decryption.h"
 
+#define CRED_ENV_IV_LEN 12
+#define CRED_ENV_TAG_LEN 16
+
+/* 1. Common 16-byte fixed prefix across all envelope versions */
+struct cred_env_commonhdr {
+    char magic[CRED_ENV_MAGIC_LEN]; /* "CRED_ENV" */
+    uint64_t version;               /* big-endian format version */
+} __attribute__((packed));
+_Static_assert(sizeof(struct cred_env_commonhdr) == 16, "Common header size must be 16 bytes");
+
+/* 2. Version 1 & 2 binary layout variants */
+struct cred_env_v1_rsa2048 {
+    uint8_t rsa_ct[TPM2_RSA2048_KEY_BYTES];
+    uint8_t iv[CRED_ENV_IV_LEN];
+    uint8_t tag[CRED_ENV_TAG_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct cred_env_v1_rsa2048) == 284, "RSA-2048 block must be 284 bytes");
+
+struct cred_env_v1_rsa4096 {
+    uint8_t rsa_ct[TPM2_RSA4096_KEY_BYTES];
+    uint8_t iv[CRED_ENV_IV_LEN];
+    uint8_t tag[CRED_ENV_TAG_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct cred_env_v1_rsa4096) == 540, "RSA-4096 block must be 540 bytes");
+
+typedef struct cred_env_v1_hdr {
+    uint16_t rsa_ct_len;            /* big-endian: 256 or 512 */
+    union {
+        struct cred_env_v1_rsa2048 rsa2048;
+        struct cred_env_v1_rsa4096 rsa4096;
+    };
+} cred_env_v1_hdr;
+
+typedef cred_env_v1_hdr cred_env_v2_hdr;
+
+/* 3. Combined envelope header with tagged union */
+struct cred_env_hdr {
+    struct cred_env_commonhdr common;
+    union {
+        cred_env_v1_hdr v1;
+        cred_env_v2_hdr v2;
+        /* Future: cred_env_v3_hdr v3; */
+    };
+} __attribute__((packed));
+
+/* 4. In-memory parsed envelope representations */
+typedef struct env_data_v1 {
+    uint16_t rsa_ct_len;
+    size_t overhead;
+    size_t plaintext_len;
+    const uint8_t *rsa_ct;
+    const uint8_t *iv;
+    const uint8_t *tag;
+    const uint8_t *ciphertext;
+} env_data_v1;
+
+typedef env_data_v1 env_data_v2;
+
+struct env_data {
+    uint64_t version;
+    size_t plaintext_len;
+    union {
+        env_data_v1 v1;
+        env_data_v2 v2;
+        /* Future: env_data_v3 v3; */
+    };
+};
+
 typedef int (*decrypt_envelope_fn)(const uint8_t *enc_data, size_t enc_len,
                                    const char *rel_path, mode_t mode,
                                    struct decrypted_node *out);

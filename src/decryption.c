@@ -1053,13 +1053,12 @@ int decrypt_envelope_version(const uint8_t *enc_data, size_t enc_len,
         return -EBADMSG;
     }
 
-    if (memcmp(enc_data, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
+    const struct cred_env_hdr *hdr = (const struct cred_env_hdr *)enc_data;
+    if (memcmp(hdr->common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
         return -EBADMSG;
     }
 
-    uint64_t version_be = 0;
-    memcpy(&version_be, enc_data + 8, sizeof(version_be));
-    uint64_t version = be64toh(version_be);
+    uint64_t version = be64toh(hdr->common.version);
     if (version_out) {
         *version_out = version;
     }

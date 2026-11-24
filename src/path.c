@@ -2,6 +2,7 @@
 #include "path.h"
 #include "inode.h"
 #include "decryption.h"
+#include "envelope.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,21 +112,19 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
             return -EACCES;
         }
 
-        uint8_t hdr[18];
-        ssize_t n = pread(fd, hdr, sizeof(hdr), 0);
-        if (n != (ssize_t)sizeof(hdr)) {
+        struct cred_env_hdr hdr;
+        ssize_t n = pread(fd, &hdr, 18, 0);
+        if (n != 18) {
             close(fd);
             return -ENOENT;
         }
 
-        if (memcmp(hdr, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
+        if (memcmp(hdr.common.magic, CRED_ENV_MAGIC, CRED_ENV_MAGIC_LEN) != 0) {
             close(fd);
             return -ENOENT;
         }
 
-        uint64_t version_be = 0;
-        memcpy(&version_be, hdr + 8, sizeof(version_be));
-        uint64_t file_ver = be64toh(version_be);
+        uint64_t file_ver = be64toh(hdr.common.version);
         if (file_ver != CRED_ENV_CUR_VERSION) {
             if (file_ver == CRED_ENV_VERSION_1) {
                 syslog(LOG_ERR, "Encountered deprecated CRED_ENV v1 file '%s'; re-encrypt to v2 format with cred-encrypt", rel_path ? rel_path : target);
@@ -137,9 +136,7 @@ int open_and_validate_path(const char *rel_path, struct stat *st_out) {
             return -ENOENT;
         }
 
-        uint16_t rsa_ct_len_be = 0;
-        memcpy(&rsa_ct_len_be, hdr + 16, sizeof(rsa_ct_len_be));
-        uint16_t rsa_ct_len = be16toh(rsa_ct_len_be);
+        uint16_t rsa_ct_len = be16toh(hdr.v2.rsa_ct_len);
         if (rsa_ct_len != TPM2_RSA2048_KEY_BYTES && rsa_ct_len != TPM2_RSA4096_KEY_BYTES) {
             close(fd);
             return -ENOENT;
