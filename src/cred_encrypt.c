@@ -9,7 +9,12 @@
 #include <getopt.h>
 #include <endian.h>
 #include <limits.h>
+#include <linux/fs.h>
 #include <sys/stat.h>
+
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1 << 0)
+#endif
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -266,8 +271,12 @@ int main(int argc, char *argv[]) {
         close(out_fd);
         out_fd = -1;
 
-        if (rename(tmp_out_path, out_path) != 0) {
-            fprintf(stderr, "Error: Atomic rename '%s' -> '%s' failed: %s\n", tmp_out_path, out_path, strerror(errno));
+        if (renameat2(AT_FDCWD, tmp_out_path, AT_FDCWD, out_path, RENAME_NOREPLACE) != 0) {
+            if (errno == EEXIST) {
+                fprintf(stderr, "Error: Output file '%s' already exists. Refusing to overwrite for security.\n", out_path);
+            } else {
+                fprintf(stderr, "Error: Atomic rename '%s' -> '%s' failed: %s\n", tmp_out_path, out_path, strerror(errno));
+            }
             goto cleanup;
         }
         tmp_out_path[0] = '\0';
@@ -289,6 +298,5 @@ cleanup:
     if (tmp_out_path[0] != '\0') {
         unlink(tmp_out_path);
     }
-    return ret;
     return ret;
 }

@@ -10,8 +10,8 @@
 
 An adversarial source code security review was performed across the `cred-fuse` codebase, evaluating Linux kernel interfaces, FUSE filesystem operations, TPM 2.0 communication channels (`libtss2`), cryptographic envelope handling (`CRED_ENV`), privilege boundaries, and process lifecycle management.
 
-A total of **5 security vulnerabilities and design weaknesses** are tracked for remediation:
-- **Medium Severity:** 3
+A total of **4 security vulnerabilities and design weaknesses** are tracked for remediation:
+- **Medium Severity:** 2
 - **Low Severity:** 1
 - **Informational:** 1
 
@@ -21,19 +21,7 @@ A total of **5 security vulnerabilities and design weaknesses** are tracked for 
 
 ## Detailed Findings
 
-### 1. TOCTOU File Clobbering in `cred-encrypt` Atomic Output Creation
-- **Severity:** Medium
-- **Location:** `src/cred_encrypt.c`, lines 228–274
-- **Vulnerability Mechanism:**  
-  `cred-encrypt` implements a security policy refusing to overwrite existing files (`stat(out_path, &check_st) == 0`). To achieve atomic creation, it writes to a temporary file `%s.tmp.<pid>` and calls `rename(tmp_out_path, out_path)`. Under POSIX and Linux semantics, standard `rename(2)` silently and atomically replaces the destination file if it exists.
-- **Threat Scenario:**  
-  There is a Time-of-Check to Time-of-Use (TOCTOU) race window between `stat(out_path)` and `rename(tmp_out_path, out_path)`. If an attacker or concurrent process creates a target file (or symlink) at `out_path` after `stat()` but before `rename()`, `cred-encrypt` will clobber the target file without reporting an error.
-- **Concrete Remediation:**  
-  Use `renameat2` with `RENAME_NOREPLACE` on Linux to ensure atomic creation fails if the destination was created during the race window.
-
----
-
-### 2. Plaintext Secret Retention on Disk on `cred-decrypt` Write Failure
+### 1. Plaintext Secret Retention on Disk on `cred-decrypt` Write Failure
 - **Severity:** Medium
 - **Location:** `src/cred_decrypt.c`, lines 233–259
 - **Vulnerability Mechanism:**  
@@ -45,7 +33,7 @@ A total of **5 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 3. Data Race on `pinned_key.session_aes_bits` in Multi-Threaded FUSE Daemon
+### 2. Data Race on `pinned_key.session_aes_bits` in Multi-Threaded FUSE Daemon
 - **Severity:** Medium
 - **Location:** `src/tpm_esys.c`, lines 404, 460, 463
 - **Vulnerability Mechanism:**  
@@ -57,7 +45,7 @@ A total of **5 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 4. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
+### 3. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
 - **Severity:** Low
 - **Location:** `src/main.c`, lines 238 & 558; `src/inode.c`, lines 354–365
 - **Vulnerability Mechanism:**  
@@ -69,7 +57,7 @@ A total of **5 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 5. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
+### 4. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
 - **Severity:** Informational / Defense-in-Depth
 - **Location:** `src/tpm_esys.c`, lines 538–548
 - **Vulnerability Mechanism:**  
