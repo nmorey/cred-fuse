@@ -200,6 +200,7 @@ int main(int argc, char *argv[]) {
     uint8_t *enc_buf = NULL;
     size_t enc_len = 0;
     struct decrypted_node out_node = {0};
+    int created_out_file = 0;
 
     if (in_path) {
         in_fd = open(in_path, O_RDONLY | O_CLOEXEC);
@@ -240,6 +241,7 @@ int main(int argc, char *argv[]) {
             }
             goto cleanup;
         }
+        created_out_file = 1;
     }
 
     if (write_all_fd(out_fd, out_node.buf, out_node.len) < 0) {
@@ -247,14 +249,27 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
+    if (out_path) {
+        if (fsync(out_fd) != 0) {
+            fprintf(stderr, "Error: Failed to fsync '%s': %s\n", out_path, strerror(errno));
+            goto cleanup;
+        }
+    }
+
     ret = 0;
 
 cleanup:
     clean_decrypted_node(&out_node);
     if (enc_buf) {
+        OPENSSL_cleanse(enc_buf, enc_len);
         free(enc_buf);
     }
     if (in_path && in_fd >= 0) close(in_fd);
-    if (out_path && out_fd >= 0) close(out_fd);
+    if (out_path && out_fd >= 0) {
+        close(out_fd);
+        if (ret != 0 && created_out_file) {
+            unlink(out_path);
+        }
+    }
     return ret;
 }

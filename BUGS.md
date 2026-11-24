@@ -10,8 +10,8 @@
 
 An adversarial source code security review was performed across the `cred-fuse` codebase, evaluating Linux kernel interfaces, FUSE filesystem operations, TPM 2.0 communication channels (`libtss2`), cryptographic envelope handling (`CRED_ENV`), privilege boundaries, and process lifecycle management.
 
-A total of **4 security vulnerabilities and design weaknesses** are tracked for remediation:
-- **Medium Severity:** 2
+A total of **3 security vulnerabilities and design weaknesses** are tracked for remediation:
+- **Medium Severity:** 1
 - **Low Severity:** 1
 - **Informational:** 1
 
@@ -21,19 +21,7 @@ A total of **4 security vulnerabilities and design weaknesses** are tracked for 
 
 ## Detailed Findings
 
-### 1. Plaintext Secret Retention on Disk on `cred-decrypt` Write Failure
-- **Severity:** Medium
-- **Location:** `src/cred_decrypt.c`, lines 233–259
-- **Vulnerability Mechanism:**  
-  When writing decrypted plaintext to an output file (`-o <out_path>`), `cred-decrypt` creates the file with `open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600)` and writes the buffer using `write_all_fd`. If `write_all_fd` fails midway (e.g., due to ENOSPC, disk quota, or I/O error), execution jumps to `cleanup:`, which closes `out_fd` without unlinking `out_path`.
-- **Threat Scenario:**  
-  When a write fails, unencrypted partial credentials remain permanently on disk with permissions 0600. Subsequent `cred-decrypt` invocations will fail with `EEXIST` due to `O_EXCL`, leaving sensitive plaintext fragments exposed on the filesystem in an error state.
-- **Concrete Remediation:**  
-  Unlink `out_path` on write failure or use a temporary file with atomic rename (matching `cred-encrypt`).
-
----
-
-### 2. Data Race on `pinned_key.session_aes_bits` in Multi-Threaded FUSE Daemon
+### 1. Data Race on `pinned_key.session_aes_bits` in Multi-Threaded FUSE Daemon
 - **Severity:** Medium
 - **Location:** `src/tpm_esys.c`, lines 404, 460, 463
 - **Vulnerability Mechanism:**  
@@ -45,7 +33,7 @@ A total of **4 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 3. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
+### 2. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
 - **Severity:** Low
 - **Location:** `src/main.c`, lines 238 & 558; `src/inode.c`, lines 354–365
 - **Vulnerability Mechanism:**  
@@ -57,7 +45,7 @@ A total of **4 security vulnerabilities and design weaknesses** are tracked for 
 
 ---
 
-### 4. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
+### 3. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
 - **Severity:** Informational / Defense-in-Depth
 - **Location:** `src/tpm_esys.c`, lines 538–548
 - **Vulnerability Mechanism:**  
