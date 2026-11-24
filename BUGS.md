@@ -10,29 +10,18 @@
 
 An adversarial source code security review was performed across the `cred-fuse` codebase, evaluating Linux kernel interfaces, FUSE filesystem operations, TPM 2.0 communication channels (`libtss2`), cryptographic envelope handling (`CRED_ENV`), privilege boundaries, and process lifecycle management.
 
-A total of **2 security vulnerabilities and design weaknesses** are tracked for remediation:
-- **Low Severity:** 1
+A total of **1 informational finding** is tracked for defense-in-depth zeroization hygiene:
 - **Informational:** 1
 
-*(Note: The foreground health check re-exec environment variable `_CREDFUSE_LOCKOUT_CHECKED` was evaluated and documented as by-design in `docs/adr/0003-foreground-tpm-health-check-and-reexec-design.md`).*
+*(Notes on evaluated items rejected as by-design:)*
+- *The foreground health check re-exec environment variable `_CREDFUSE_LOCKOUT_CHECKED` is documented in `docs/adr/0003-foreground-tpm-health-check-and-reexec-design.md`.*
+- *Updating `set_inode_identity` on `lookup`/`readdir` is intentional: the backing store directory hierarchy is strictly enforced to be root-owned with no group/world write permissions (`open_and_validate_path`), so non-root users cannot replace files. Updating identity on re-lookup allows legitimate administrative file rotations and credential updates.*
 
 ---
 
 ## Detailed Findings
 
-### 1. Inode Identity Overwrite Allows TOCTOU File Swap Laundering
-- **Severity:** Low
-- **Location:** `src/main.c`, lines 238 & 558; `src/inode.c`, lines 354–365
-- **Vulnerability Mechanism:**  
-  `set_inode_identity(ino, dev, backing_ino)` is invoked on every `lookup` and `readdir`. If an inode is already present in the active table, `set_inode_identity` unconditionally overwrites the previously recorded `(dev, backing_ino)` pair without checking if `backing_ino` was already set.
-- **Threat Scenario:**  
-  If a file in the backing store is replaced while an inode remains active in memory, a subsequent `lookup` request on the same path overwrites the recorded backing identity on the existing inode with the new file's identity. Any subsequent `open()` on that inode compares against the newly overwritten identity, defeating the TOCTOU file swap protection established in commit `d80266e4d43b`.
-- **Concrete Remediation:**  
-  In `set_inode_identity`, verify whether `backing_ino` is already set. If it is set and does not match the new identity, reject the update or mark the inode entry as stale.
-
----
-
-### 2. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
+### 1. Missing Memory Cleansing of Pinned TPM Modulus on Cleanup
 - **Severity:** Informational / Defense-in-Depth
 - **Location:** `src/tpm_esys.c`, lines 538–548
 - **Vulnerability Mechanism:**  
