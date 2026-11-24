@@ -545,8 +545,9 @@ void tpm_cleanup(void) {
         free(cached_pubkey);
         cached_pubkey = NULL;
     }
+    OPENSSL_cleanse(pinned_key.modulus, sizeof(pinned_key.modulus));
     pinned_key.modulus_len = 0;
-    memset(&pinned_key.name, 0, sizeof(pinned_key.name));
+    OPENSSL_cleanse(&pinned_key.name, sizeof(pinned_key.name));
     __atomic_store_n(&pinned_key.session_aes_bits, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&pinned_key.lock);
 }
